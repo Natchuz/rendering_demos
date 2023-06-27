@@ -23,6 +23,7 @@ auto App::init() -> bool
 {
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // Disable OpenGL things
 	glfw_window = glfwCreateWindow(1280, 720, "Rendering demos", nullptr, nullptr);
+	glfwSetWindowUserPointer(glfw_window, this);
 	uint32_t glfw_extensions_count;
 	auto glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extensions_count);
 	required_glfw_extensions = std::span{glfw_extensions, glfw_extensions_count};
@@ -60,6 +61,7 @@ auto App::init_vulkan() -> bool
 {
 	create_instance();
 	create_device();
+	create_surface();
 	create_swapchain();
 	create_buffers();
 	create_sync_objects();
@@ -273,7 +275,7 @@ auto App::create_device() -> void
 	vkGetDeviceQueue(device, gfx_queue_family_index, 0, &gfx_queue);
 }
 
-auto App::create_swapchain() -> void
+auto App::create_surface() -> void
 {
 	if (!glfwGetPhysicalDevicePresentationSupport(instance, physical_device, gfx_queue_family_index))
 	{
@@ -281,34 +283,15 @@ auto App::create_swapchain() -> void
 	}
 
 	glfwCreateWindowSurface(instance, glfw_window, nullptr, &surface);
+}
 
-	uint32_t formats_count;
-	vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &formats_count, nullptr);
-	std::vector<VkSurfaceFormatKHR> formats(formats_count);
-	vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &formats_count, formats.data());
-
+auto App::create_swapchain(bool recreate) -> void
+{
 	uint32_t present_modes_count;
 	vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_modes_count, nullptr);
 	std::vector<VkPresentModeKHR> present_modes(present_modes_count);
 	vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_modes_count, present_modes.data());
-
-	VkSurfaceCapabilitiesKHR surface_capabilities;
-	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surface_capabilities);
-
-	VkSurfaceFormatKHR selected_surface_format = formats[0];
-	for (const auto &format: formats)
-	{
-		if (format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-		{
-			selected_surface_format = format;
-			break;
-		}
-	}
-
-	swapchain_image_format = selected_surface_format.format;
-	window_extent = surface_capabilities.currentExtent;
-
-	VkPresentModeKHR selected_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+	VkPresentModeKHR selected_present_mode = VK_PRESENT_MODE_FIFO_KHR; // Always supported
 	for (const auto &present_mode: present_modes)
 	{
 		if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
@@ -318,23 +301,39 @@ auto App::create_swapchain() -> void
 		}
 	}
 
-	VkExtent2D swap_extent = surface_capabilities.currentExtent;
-	if (surface_capabilities.currentExtent.width == std::numeric_limits<uint32_t>::max())
+	uint32_t formats_count;
+	vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &formats_count, nullptr);
+	std::vector<VkSurfaceFormatKHR> formats(formats_count);
+	vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &formats_count, formats.data());
+	VkSurfaceFormatKHR selected_surface_format = formats[0];
+	for (const auto &format: formats)
 	{
+		if (format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+		{
+			selected_surface_format = format;
+			break;
+		}
+	}
+	swapchain_image_format = selected_surface_format.format;
+
+	// Technically, we should query for capabilities for selected present mode, but we're using swapchain
+	// images only as color attachment, so it doesn't matter since color attachment usage is required anyway.
+	VkSurfaceCapabilitiesKHR surface_capabilities;
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surface_capabilities);
+
+	window_extent = surface_capabilities.currentExtent;
+
+	// Special value indicating that surface size will be determined by swapchain
+	if (window_extent.width == 0xFFFFFFFF && window_extent.width == 0xFFFFFFFF) {
 		int32_t width, height;
 		glfwGetFramebufferSize(glfw_window, &width, &height);
-
-		swap_extent = {
-			static_cast<uint32_t>(width),
-			static_cast<uint32_t>(height)
-		};
-
-		swap_extent.width = std::clamp(
-			swap_extent.width,
+		window_extent = {static_cast<uint32_t>(width),static_cast<uint32_t>(height)};
+		window_extent.width = std::clamp(
+			window_extent.width,
 			surface_capabilities.minImageExtent.width,
 			surface_capabilities.maxImageExtent.width);
-		swap_extent.height = std::clamp(
-			swap_extent.height,
+		window_extent.height = std::clamp(
+			window_extent.height,
 			surface_capabilities.minImageExtent.height,
 			surface_capabilities.maxImageExtent.height);
 	}
@@ -351,15 +350,15 @@ auto App::create_swapchain() -> void
 		.minImageCount = image_count,
 		.imageFormat = selected_surface_format.format,
 		.imageColorSpace = selected_surface_format.colorSpace,
-		.imageExtent = swap_extent,
+		.imageExtent = window_extent,
 		.imageArrayLayers = 1,
-		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.preTransform = surface_capabilities.currentTransform,
 		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
 		.presentMode = selected_present_mode,
 		.clipped = true,
-		.oldSwapchain = VK_NULL_HANDLE,
+		.oldSwapchain = recreate ? swapchain : VK_NULL_HANDLE, // Is returning to the same variable fine?
 	};
 	vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr, &swapchain);
 
@@ -451,7 +450,6 @@ auto load_file(const char* file_path) -> std::vector<uint32_t>
 	return buffer;
 }
 
-
 auto App::create_shaders() -> void
 {
 	auto vert_shader_code = load_file("vert.spv");
@@ -533,26 +531,17 @@ auto App::create_pipeline() -> void
 		.alphaToOneEnable = VK_FALSE,
 	};
 
-	VkViewport viewport = {
-		.x = 0,
-		.y = 0,
-		.width = (float) window_extent.width,
-		.height = (float) window_extent.height,
-		.minDepth = 0.0f,
-		.maxDepth = 1.0f,
-	};
-
-	VkRect2D scissor = {
-		.offset = {}, // Zero initialize offset
-		.extent = window_extent,
-	};
-
 	VkPipelineViewportStateCreateInfo viewport_state = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
 		.viewportCount = 1,
-		.pViewports = &viewport,
 		.scissorCount = 1,
-		.pScissors = &scissor,
+	};
+
+	VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+	VkPipelineDynamicStateCreateInfo dynamic_state = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		.dynamicStateCount = 2,
+		.pDynamicStates = dynamic_states,
 	};
 
 	VkPipelineColorBlendAttachmentState color_blend_attachment_state = {
@@ -588,6 +577,7 @@ auto App::create_pipeline() -> void
 		.pRasterizationState = &rasterization_state,
 		.pMultisampleState = &multisample_state,
 		.pColorBlendState = &color_blend_state,
+		.pDynamicState = &dynamic_state,
 		.layout = pipeline_layout,
 		.renderPass = VK_NULL_HANDLE,
 		.subpass = 0,
@@ -605,8 +595,21 @@ auto App::draw(uint32_t frame) -> void
 	vkResetFences(device, 1, &render_fence[index]);
 
 	uint32_t image_index;
-	vkAcquireNextImageKHR(device, swapchain, std::numeric_limits<uint64_t>::max(),
+	auto acquire_result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
 						  present_semaphore[index], VK_NULL_HANDLE, &image_index);
+
+	if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR || acquire_result == VK_SUBOPTIMAL_KHR)
+	{
+		// Recreate swapchain
+		// Sync for image views in-flight:
+		vkWaitForFences(device, 1, &render_fence[(frame + 1) % 2], true, UINT64_MAX);
+		for (const auto &image_view : swapchain_image_views)
+		{
+			vkDestroyImageView(device, image_view, nullptr);
+		}
+		create_swapchain(true);
+		vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,present_semaphore[index], VK_NULL_HANDLE, &image_index);
+	}
 
 	VkCommandBufferBeginInfo begin_info = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -667,6 +670,20 @@ auto App::draw(uint32_t frame) -> void
 		.colorAttachmentCount = 1,
 		.pColorAttachments = &swapchain_attachment_info,
 	};
+
+	VkViewport viewport = {
+		.x = 0,
+		.y = 0,
+		.width = (float) window_extent.width,
+		.height = (float) window_extent.height,
+		.minDepth = 0.0f,
+		.maxDepth = 1.0f,
+	};
+	vkCmdSetViewport(command_buffers[index], 0, 1, &viewport);
+
+	VkRect2D scissor = { .offset = {}, .extent = window_extent, };
+	vkCmdSetScissor(command_buffers[index], 0, 1, &scissor);
+
 	vkCmdBeginRendering(command_buffers[index], &rendering_info);
 	vkCmdBindPipeline(command_buffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	vkCmdDraw(command_buffers[index], 3, 1, 0, 0);

@@ -31,6 +31,7 @@ private:
 	uint32_t gfx_queue_family_index;
 
 	VkSurfaceKHR surface;
+
 	VkSwapchainKHR swapchain;
 	VkFormat swapchain_image_format;
 	uint32_t swapchain_images_count;
@@ -57,7 +58,8 @@ private:
 	auto init_vulkan() -> bool;
 	auto create_instance() -> void;
 	auto create_device() -> void;
-	auto create_swapchain() -> void;
+	auto create_surface() -> void;
+	auto create_swapchain(bool recreate = false) -> void;
 	auto create_buffers() -> void;
 	auto create_sync_objects() -> void;
 	auto create_shaders() -> void;
