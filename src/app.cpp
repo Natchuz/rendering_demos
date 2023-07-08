@@ -452,7 +452,7 @@ auto load_file(const char* file_path) -> std::vector<uint32_t>
 
 auto App::create_shaders() -> void
 {
-	auto vert_shader_code = load_file("vert.spv");
+	auto vert_shader_code = load_file("data/shaders/triangle_vert.spv");
 	VkShaderModuleCreateInfo vert_shader_create_info = {
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.codeSize = vert_shader_code.size() * sizeof(uint32_t),
@@ -460,7 +460,7 @@ auto App::create_shaders() -> void
 	};
 	vkCreateShaderModule(device, &vert_shader_create_info, nullptr, &vertex_shader);
 	
-	auto frag_shader_code = load_file("frag.spv");
+	auto frag_shader_code = load_file("data/shaders/triangle_frag.spv");
 	VkShaderModuleCreateInfo frag_shader_create_info = {
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.codeSize = frag_shader_code.size() * sizeof(uint32_t),

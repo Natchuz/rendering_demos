@@ -10,9 +10,9 @@ void main() {
 	);
 
 	vec3 colors[3] = vec3[3](
+		vec3(0.0f, 0.0f, 1.0f),
 		vec3(1.0f, 0.0f, 0.0f),
-		vec3(0.0f, 1.0f, 0.0f),
-		vec3(0.0f, 0.0f, 1.0f)
+		vec3(0.0f, 1.0f, 0.0f)
 	);
 
 	out_color = colors[gl_VertexIndex];
