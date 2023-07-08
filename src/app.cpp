@@ -4,6 +4,9 @@
 #include<limits>
 #include<fstream>
 
+#define VMA_IMPLEMENTATION
+#include<vk_mem_alloc.h>
+
 #include "app.h"
 
 App *App::ptr;
@@ -61,9 +64,12 @@ auto App::init_vulkan() -> bool
 {
 	create_instance();
 	create_device();
+	create_allocator();
 	create_surface();
 	create_swapchain();
+	create_command_buffers();
 	create_buffers();
+	upload_vertex_data();
 	create_sync_objects();
 	create_shaders();
 	create_pipeline();
@@ -116,7 +122,7 @@ auto App::create_instance() -> void
 	auto vk_err = vkCreateInstance(&instance_create_info, nullptr, &instance);
 	switch (vk_err)
 	{
-		case VK_SUCCESS: 
+		case VK_SUCCESS:
 			break;
 		case VK_ERROR_LAYER_NOT_PRESENT:
 			throw std::runtime_error("Layer not present!");
@@ -127,7 +133,7 @@ auto App::create_instance() -> void
 		case VK_ERROR_INITIALIZATION_FAILED:
 			throw std::runtime_error("Initialization failed!");
 		default:
-			throw std::runtime_error("Could not create instance!");	
+			throw std::runtime_error("Could not create instance!");
 	}
 
 	std::cout << "Following validation layers loaded (1):\n";
@@ -258,7 +264,7 @@ auto App::create_device() -> void
 		.synchronization2 = true,
 		.dynamicRendering = true,
 	};
-	
+
 	VkDeviceCreateInfo device_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		.pNext = &device_13_features,
@@ -267,12 +273,23 @@ auto App::create_device() -> void
 		.enabledExtensionCount = (uint32_t) device_extensions.size(),
 		.ppEnabledExtensionNames = device_extensions.data(),
 	};
-	
+
 	vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
 
 	//	if (vk_err != VK_SUCCESS) {} // TODO: Panic
 
 	vkGetDeviceQueue(device, gfx_queue_family_index, 0, &gfx_queue);
+}
+
+auto App::create_allocator() -> void {
+	VmaAllocatorCreateInfo create_info = {
+		.flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT, // TODO: add device_address support
+		.physicalDevice = physical_device,
+		.device = device,
+		.instance = instance,
+		.vulkanApiVersion = VK_API_VERSION_1_3,
+	};
+	vmaCreateAllocator(&create_info, &vma_allocator);
 }
 
 auto App::create_surface() -> void
@@ -393,7 +410,7 @@ auto App::create_swapchain(bool recreate) -> void
 	}
 }
 
-auto App::create_buffers() -> void
+auto App::create_command_buffers() -> void
 {
 	VkCommandPoolCreateInfo command_pool_create_info = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -410,6 +427,39 @@ auto App::create_buffers() -> void
 		.commandBufferCount = swapchain_images_count,
 	};
 	vkAllocateCommandBuffers(device, &command_buffer_allocate_info, command_buffers.data());
+}
+
+auto App::create_buffers() -> void {
+
+	VkBufferCreateInfo vertex_buffer_create_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = 1000,
+		.usage = VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+	};
+
+	VmaAllocationCreateInfo vma_vertex_buffer_create_info = {
+		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO,
+	};
+
+	vmaCreateBuffer(vma_allocator,
+					&vertex_buffer_create_info,
+					&vma_vertex_buffer_create_info,
+					&vertex_buffer.buffer,
+					&vertex_buffer.allocation,
+					nullptr);
+	vmaMapMemory(vma_allocator, vertex_buffer.allocation, &vertex_buffer_data);
+}
+
+const std::vector<float> VERTEX_DATA = {
+	0.5, 0.5, 0.0, 0.0, 0.0, 1.0,
+	-0.5, 0.5, 0.0, 1.0, 0.0, 0.0,
+	0.0, -0.5, 0.0, 0.0, 1.0, 0.0,
+};
+
+auto App::upload_vertex_data() -> void {
+	memcpy(vertex_buffer_data, VERTEX_DATA.data(), VERTEX_DATA.size() * sizeof(float));
+	vmaFlushAllocation(vma_allocator, vertex_buffer.allocation, 0, VERTEX_DATA.size() * sizeof(float));
 }
 
 auto App::create_sync_objects() -> void
@@ -459,7 +509,7 @@ auto App::create_shaders() -> void
 		.pCode = vert_shader_code.data(),
 	};
 	vkCreateShaderModule(device, &vert_shader_create_info, nullptr, &vertex_shader);
-	
+
 	auto frag_shader_code = load_file("data/shaders/triangle_frag.spv");
 	VkShaderModuleCreateInfo frag_shader_create_info = {
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -498,8 +548,34 @@ auto App::create_pipeline() -> void
 	};
 	VkPipelineShaderStageCreateInfo stages[2] = {vert_stage, frag_stage};
 
+	VkVertexInputBindingDescription binding_description = {
+		.binding = 0,
+		.stride = 6 * sizeof(float),
+		.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+	};
+
+	VkVertexInputAttributeDescription position_attribute_description = {
+		.location = 0,
+		.binding = 0,
+		.format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = 0,
+	};
+
+	VkVertexInputAttributeDescription color_attribute_description = {
+		.location = 1,
+		.binding = 0,
+		.format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = sizeof(float) * 3,
+	};
+
+	VkVertexInputAttributeDescription attributes[2] = {position_attribute_description, color_attribute_description};
+
 	VkPipelineVertexInputStateCreateInfo vertex_input_state = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount = 1,
+		.pVertexBindingDescriptions = &binding_description,
+		.vertexAttributeDescriptionCount = 2,
+		.pVertexAttributeDescriptions = attributes,
 	};
 
 	VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
@@ -564,7 +640,7 @@ auto App::create_pipeline() -> void
 		.depthAttachmentFormat = VK_FORMAT_UNDEFINED,
 		.stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
 	};
-	
+
 	VkGraphicsPipelineCreateInfo pipeline_create_info = {
 		.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 		.pNext = &pipeline_rendering_create_info,
@@ -686,6 +762,10 @@ auto App::draw(uint32_t frame) -> void
 
 	vkCmdBeginRendering(command_buffers[index], &rendering_info);
 	vkCmdBindPipeline(command_buffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+	VkDeviceSize offsets = 0;
+	vkCmdBindVertexBuffers(command_buffers[index], 0, 1, &vertex_buffer.buffer, &offsets);
+
 	vkCmdDraw(command_buffers[index], 3, 1, 0, 0);
 	vkCmdEndRendering(command_buffers[index]);
 
@@ -734,4 +814,3 @@ auto App::draw(uint32_t frame) -> void
 	};
 	vkQueuePresentKHR(gfx_queue, &present_info);
 }
-

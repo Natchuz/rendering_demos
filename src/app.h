@@ -5,9 +5,15 @@
 
 #include<vulkan/vulkan.h>
 #include<GLFW/glfw3.h>
+#include<vk_mem_alloc.h>
 
 auto init_global_libs() -> bool;
 auto deinit_global_libs() -> void;
+
+struct AllocatedBuffer {
+	VkBuffer buffer;
+	VmaAllocation allocation;
+};
 
 class App
 {
@@ -30,6 +36,8 @@ private:
 	VkQueue gfx_queue;
 	uint32_t gfx_queue_family_index;
 
+	VmaAllocator vma_allocator;
+
 	VkSurfaceKHR surface;
 
 	VkSwapchainKHR swapchain;
@@ -40,6 +48,9 @@ private:
 
 	VkCommandPool command_pool;
 	std::vector<VkCommandBuffer> command_buffers;
+
+	AllocatedBuffer vertex_buffer;
+	void* vertex_buffer_data;
 
 	VkSemaphore render_semaphore[2], present_semaphore[2];
 	VkFence render_fence[2];
@@ -58,9 +69,12 @@ private:
 	auto init_vulkan() -> bool;
 	auto create_instance() -> void;
 	auto create_device() -> void;
+    auto create_allocator() -> void;
 	auto create_surface() -> void;
 	auto create_swapchain(bool recreate = false) -> void;
+	auto create_command_buffers() -> void;
 	auto create_buffers() -> void;
+	auto upload_vertex_data() -> void;
 	auto create_sync_objects() -> void;
 	auto create_shaders() -> void;
 	auto create_pipeline() -> void;

@@ -50,3 +50,6 @@ target_link_libraries(rendering_demos PRIVATE Vulkan::Vulkan)
 # --- Vcpkg ---
 find_package(glfw3 CONFIG REQUIRED)
 target_link_libraries(rendering_demos PRIVATE glfw)
+
+find_package(unofficial-vulkan-memory-allocator CONFIG REQUIRED)
+target_link_libraries(rendering_demos PRIVATE unofficial::vulkan-memory-allocator::vulkan-memory-allocator)
