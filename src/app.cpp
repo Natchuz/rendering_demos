@@ -7,6 +7,8 @@
 #define VMA_IMPLEMENTATION
 #include<vk_mem_alloc.h>
 
+#include <glm/gtx/transform.hpp>
+
 #include "app.h"
 
 App *App::ptr;
@@ -476,16 +478,6 @@ auto App::create_buffers() -> void {
 						&frame_data_buffer.allocation,
 						nullptr);
 		vmaMapMemory(vma_allocator, frame_data_buffer.allocation, &frame_data_buffer_ptr);
-
-		float f = 0.1f;
-		memcpy(frame_data_buffer_ptr, &f, sizeof(float));
-
-		float s = 1.0f;
-		void* offset_ptr = reinterpret_cast<char*>(frame_data_buffer_ptr) + sizeof(float) +
-			(physical_device_limits.minUniformBufferOffsetAlignment
-			- (sizeof(float) % physical_device_limits.minUniformBufferOffsetAlignment));
-		memcpy(offset_ptr, &s, sizeof(float));
-		vmaFlushAllocation(vma_allocator, frame_data_buffer.allocation, 0, sizeof(float));
 	}
 }
 
@@ -799,6 +791,37 @@ auto App::draw(uint32_t frame) -> void
 		vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,present_semaphore[index], VK_NULL_HANDLE, &image_index);
 	}
 
+	uint64_t current_per_frame_data_bytes_offset =
+		(sizeof(FrameData) + physical_device_limits.minUniformBufferOffsetAlignment
+		- (sizeof(FrameData) % physical_device_limits.minUniformBufferOffsetAlignment)) * index;
+
+	// Upload per-frame data
+	{
+		glm::vec3 cam_pos = { 0.f, 0.f, -2.f };
+		glm::mat4 view = glm::translate(glm::mat4(1.f), cam_pos);
+		glm::mat4 projection = glm::perspective(
+			glm::radians(70.f),
+			1280.f / 720.f,
+			0.1f,
+			200.0f);
+		projection[1][1] *= -1;
+		glm::mat4 model = glm::rotate(
+			glm::mat4{ 1.0f },
+			glm::radians(static_cast<float>(frame) * 0.4f),
+			glm::vec3(0, 1, 0));
+		glm::mat4 render_matrix = projection * view * model;
+
+		FrameData frame_data = {
+			.render_matrix = render_matrix,
+		};
+
+		void* dst_pointer = reinterpret_cast<char*>(frame_data_buffer_ptr) + current_per_frame_data_bytes_offset;
+
+		memcpy(dst_pointer, &frame_data, sizeof(FrameData));
+		vmaFlushAllocation(vma_allocator, frame_data_buffer.allocation,
+						   current_per_frame_data_bytes_offset, sizeof(FrameData));
+	}
+
 	VkCommandBufferBeginInfo begin_info = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -872,9 +895,7 @@ auto App::draw(uint32_t frame) -> void
 	VkRect2D scissor = { .offset = {}, .extent = window_extent, };
 	vkCmdSetScissor(command_buffers[index], 0, 1, &scissor);
 
-	uint32_t offset = sizeof(float) + (physical_device_limits.minUniformBufferOffsetAlignment
-						- (sizeof(float) % physical_device_limits.minUniformBufferOffsetAlignment));
-	offset *= index;
+	uint32_t offset = current_per_frame_data_bytes_offset;
 	vkCmdBindDescriptorSets(command_buffers[index],
 							VK_PIPELINE_BIND_POINT_GRAPHICS,
 							pipeline_layout,
