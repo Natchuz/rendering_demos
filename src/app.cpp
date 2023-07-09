@@ -70,6 +70,7 @@ auto App::init_vulkan() -> bool
 	create_command_buffers();
 	create_buffers();
 	upload_vertex_data();
+	create_descriptors();
 	create_sync_objects();
 	create_shaders();
 	create_pipeline();
@@ -210,6 +211,8 @@ auto App::create_device() -> void
 	} while (enum_result == VK_INCOMPLETE);
 
 	std::cout << "Selected " << physical_device_properties.deviceName << "\n";
+
+	physical_device_limits = physical_device_properties.limits;
 
 	/*
 		Queue selection
@@ -431,24 +434,59 @@ auto App::create_command_buffers() -> void
 
 auto App::create_buffers() -> void {
 
-	VkBufferCreateInfo vertex_buffer_create_info = {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.size = 1000,
-		.usage = VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-	};
+	// Vertex buffer
+	{
+		VkBufferCreateInfo vertex_buffer_create_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = 1000,
+			.usage = VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		};
 
-	VmaAllocationCreateInfo vma_vertex_buffer_create_info = {
-		.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-		.usage = VMA_MEMORY_USAGE_AUTO,
-	};
+		VmaAllocationCreateInfo vma_vertex_buffer_create_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
 
-	vmaCreateBuffer(vma_allocator,
-					&vertex_buffer_create_info,
-					&vma_vertex_buffer_create_info,
-					&vertex_buffer.buffer,
-					&vertex_buffer.allocation,
-					nullptr);
-	vmaMapMemory(vma_allocator, vertex_buffer.allocation, &vertex_buffer_data);
+		vmaCreateBuffer(vma_allocator,
+						&vertex_buffer_create_info,
+						&vma_vertex_buffer_create_info,
+						&vertex_buffer.buffer,
+						&vertex_buffer.allocation,
+						nullptr);
+		vmaMapMemory(vma_allocator, vertex_buffer.allocation, &vertex_buffer_ptr);
+	}
+
+	// Uniform buffer
+	{
+		VkBufferCreateInfo buffer_create_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = 1000,
+			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		};
+
+		VmaAllocationCreateInfo vma_buffer_create_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+
+		vmaCreateBuffer(vma_allocator,
+						&buffer_create_info,
+						&vma_buffer_create_info,
+						&frame_data_buffer.buffer,
+						&frame_data_buffer.allocation,
+						nullptr);
+		vmaMapMemory(vma_allocator, frame_data_buffer.allocation, &frame_data_buffer_ptr);
+
+		float f = 0.1f;
+		memcpy(frame_data_buffer_ptr, &f, sizeof(float));
+
+		float s = 1.0f;
+		void* offset_ptr = reinterpret_cast<char*>(frame_data_buffer_ptr) + sizeof(float) +
+			(physical_device_limits.minUniformBufferOffsetAlignment
+			- (sizeof(float) % physical_device_limits.minUniformBufferOffsetAlignment));
+		memcpy(offset_ptr, &s, sizeof(float));
+		vmaFlushAllocation(vma_allocator, frame_data_buffer.allocation, 0, sizeof(float));
+	}
 }
 
 const std::vector<float> VERTEX_DATA = {
@@ -458,8 +496,80 @@ const std::vector<float> VERTEX_DATA = {
 };
 
 auto App::upload_vertex_data() -> void {
-	memcpy(vertex_buffer_data, VERTEX_DATA.data(), VERTEX_DATA.size() * sizeof(float));
+	memcpy(vertex_buffer_ptr, VERTEX_DATA.data(), VERTEX_DATA.size() * sizeof(float));
 	vmaFlushAllocation(vma_allocator, vertex_buffer.allocation, 0, VERTEX_DATA.size() * sizeof(float));
+}
+
+
+auto App::create_descriptors() -> void {
+
+	{
+		VkDescriptorSetLayoutBinding set_layout_bindings[1] = {
+			{
+				.binding = 0,
+				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+			}
+		};
+
+		VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.flags = 0,
+			.bindingCount = 1,
+			.pBindings = set_layout_bindings,
+		};
+
+		vkCreateDescriptorSetLayout(device, &descriptor_set_layout_create_info, nullptr, &per_frame_descriptor_set_layout);
+	}
+
+	{
+		VkDescriptorPoolSize pool_sizes[1] = {
+			{
+				.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+				.descriptorCount = 10,
+			},
+		};
+
+		VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.flags = 0,
+			.maxSets = 10,
+			.poolSizeCount = 1,
+			.pPoolSizes = pool_sizes,
+		};
+
+		vkCreateDescriptorPool(device, &descriptor_pool_create_info, nullptr, &descriptor_pool);
+	}
+
+	{
+		VkDescriptorSetAllocateInfo descriptor_set_allocate_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.descriptorPool = descriptor_pool,
+			.descriptorSetCount = 1,
+			.pSetLayouts = &per_frame_descriptor_set_layout,
+		};
+
+		vkAllocateDescriptorSets(device, &descriptor_set_allocate_info, &per_frame_descriptor_set);
+
+		VkDescriptorBufferInfo descriptor_buffer_info = {
+			.buffer = frame_data_buffer.buffer,
+			.offset = 0,
+			.range = 4,
+		};
+
+		VkWriteDescriptorSet descriptor_set_write = {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = per_frame_descriptor_set,
+			.dstBinding = 0,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+			.pBufferInfo = &descriptor_buffer_info,
+		};
+
+		vkUpdateDescriptorSets(device, 1, &descriptor_set_write, 0, nullptr);
+	}
 }
 
 auto App::create_sync_objects() -> void
@@ -527,6 +637,8 @@ auto App::create_pipeline() -> void
 	VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.flags = 0,
+		.setLayoutCount = 1,
+		.pSetLayouts = &per_frame_descriptor_set_layout,
 	};
 	vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr, &pipeline_layout);
 
@@ -759,6 +871,16 @@ auto App::draw(uint32_t frame) -> void
 
 	VkRect2D scissor = { .offset = {}, .extent = window_extent, };
 	vkCmdSetScissor(command_buffers[index], 0, 1, &scissor);
+
+	uint32_t offset = sizeof(float) + (physical_device_limits.minUniformBufferOffsetAlignment
+						- (sizeof(float) % physical_device_limits.minUniformBufferOffsetAlignment));
+	offset *= index;
+	vkCmdBindDescriptorSets(command_buffers[index],
+							VK_PIPELINE_BIND_POINT_GRAPHICS,
+							pipeline_layout,
+							0,
+							1, &per_frame_descriptor_set,
+							1, &offset);
 
 	vkCmdBeginRendering(command_buffers[index], &rendering_info);
 	vkCmdBindPipeline(command_buffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);

@@ -6,9 +6,14 @@
 #include<vulkan/vulkan.h>
 #include<GLFW/glfw3.h>
 #include<vk_mem_alloc.h>
+#include<glm/matrix.hpp>
 
 auto init_global_libs() -> bool;
 auto deinit_global_libs() -> void;
+
+struct FrameData {
+	glm::mat4x4 render_matrix;
+};
 
 struct AllocatedBuffer {
 	VkBuffer buffer;
@@ -32,6 +37,7 @@ private:
 	uint32_t instance_version;
 
 	VkPhysicalDevice physical_device;
+	VkPhysicalDeviceLimits physical_device_limits;
 	VkDevice device;
 	VkQueue gfx_queue;
 	uint32_t gfx_queue_family_index;
@@ -50,7 +56,14 @@ private:
 	std::vector<VkCommandBuffer> command_buffers;
 
 	AllocatedBuffer vertex_buffer;
-	void* vertex_buffer_data;
+	void* vertex_buffer_ptr;
+
+	AllocatedBuffer frame_data_buffer;
+	void* frame_data_buffer_ptr;
+
+	VkDescriptorSetLayout per_frame_descriptor_set_layout;
+	VkDescriptorPool descriptor_pool;
+	VkDescriptorSet per_frame_descriptor_set;
 
 	VkSemaphore render_semaphore[2], present_semaphore[2];
 	VkFence render_fence[2];
@@ -75,6 +88,7 @@ private:
 	auto create_command_buffers() -> void;
 	auto create_buffers() -> void;
 	auto upload_vertex_data() -> void;
+	auto create_descriptors() -> void;
 	auto create_sync_objects() -> void;
 	auto create_shaders() -> void;
 	auto create_pipeline() -> void;
