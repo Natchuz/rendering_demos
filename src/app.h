@@ -84,6 +84,8 @@ private:
 	VkPipelineLayout pipeline_layout;
 	VkPipeline pipeline;
 
+	VkDescriptorPool imgui_descriptor_pool;
+
 	bool is_running = false;
 	uint32_t frame_index;
 
@@ -103,6 +105,8 @@ private:
 	auto create_sync_objects() -> void;
 	auto create_shaders() -> void;
 	auto create_pipeline() -> void;
+
+	auto init_imgui() -> void;
 
 	auto draw(uint32_t frame_index) -> void;
 };

@@ -44,8 +44,28 @@ add_executable(rendering_demos ${SRCS})
 target_include_directories(rendering_demos PRIVATE "src")
 add_dependencies(rendering_demos shaders)
 
+target_include_directories(rendering_demos PRIVATE "vendor")
+
 find_package(Vulkan REQUIRED)
 target_link_libraries(rendering_demos PRIVATE Vulkan::Vulkan)
+
+# ImGui
+set(IMGUI_SRCS
+		vendor/imgui/imgui.cpp
+		vendor/imgui/imgui_demo.cpp
+		vendor/imgui/imgui_draw.cpp
+		vendor/imgui/imgui_tables.cpp
+		vendor/imgui/imgui_widgets.cpp
+		vendor/imgui/backends/imgui_impl_glfw.cpp
+		vendor/imgui/backends/imgui_impl_vulkan.cpp
+		)
+add_library(imgui ${IMGUI_SRCS})
+target_include_directories(imgui PRIVATE "vendor/imgui")
+target_link_libraries(imgui PRIVATE Vulkan::Vulkan)
+target_link_libraries(imgui PRIVATE glfw)
+
+target_include_directories(rendering_demos PRIVATE "vendor/imgui")
+target_link_libraries(rendering_demos PRIVATE imgui)
 
 # --- Vcpkg ---
 find_package(glfw3 CONFIG REQUIRED)

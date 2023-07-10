@@ -8,6 +8,9 @@
 #include<vk_mem_alloc.h>
 
 #include <glm/gtx/transform.hpp>
+#include <imgui/imgui.h>
+#include <imgui/backends/imgui_impl_glfw.h>
+#include <imgui/backends/imgui_impl_vulkan.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include<tiny_obj_loader.h>
@@ -58,7 +61,16 @@ auto App::run() -> void
 	while (!glfwWindowShouldClose(glfw_window))
 	{
 		glfwPollEvents();
+
+		ImGui_ImplVulkan_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
+
+		bool yes = true;
+		ImGui::ShowDemoWindow(&yes);
+
 		draw(frame_index);
+
 		frame_index += 1;
 	}
 
@@ -80,6 +92,8 @@ auto App::init_vulkan() -> bool
 	create_sync_objects();
 	create_shaders();
 	create_pipeline();
+
+	init_imgui();
 
 	return true;
 }
@@ -874,6 +888,84 @@ auto App::create_pipeline() -> void
 	vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline);
 }
 
+auto App::init_imgui() -> void {
+	{
+		VkDescriptorPoolSize pool_sizes[] = {
+			{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+			{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+		};
+
+		VkDescriptorPoolCreateInfo pool_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+			.maxSets = 1000 * IM_ARRAYSIZE(pool_sizes),
+			.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes),
+			.pPoolSizes = pool_sizes,
+		};
+
+		vkCreateDescriptorPool(device, &pool_info, nullptr, &imgui_descriptor_pool);
+	}
+
+	ImGui::CreateContext();
+	ImGui::StyleColorsDark();
+
+	ImGuiIO& io = ImGui::GetIO(); (void)io;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+	io.Fonts->AddFontDefault();
+
+	ImGui_ImplGlfw_InitForVulkan(glfw_window, true);
+
+	ImGui_ImplVulkan_InitInfo init_info = {
+		.Instance = instance,
+		.PhysicalDevice = physical_device,
+		.Device = device,
+		.QueueFamily = gfx_queue_family_index,
+		.Queue = gfx_queue,
+		.PipelineCache = VK_NULL_HANDLE,
+		.DescriptorPool = imgui_descriptor_pool,
+		.MinImageCount = swapchain_images_count,
+		.ImageCount = swapchain_images_count,
+		.MSAASamples = VK_SAMPLE_COUNT_1_BIT,
+		.UseDynamicRendering = true,
+		.ColorAttachmentFormat = swapchain_image_format,
+	};
+	ImGui_ImplVulkan_Init(&init_info, VK_NULL_HANDLE);
+
+	{
+		VkCommandBuffer command_buffer = command_buffers[0];
+
+		VkCommandBufferBeginInfo begin_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		};
+		vkBeginCommandBuffer(command_buffer, &begin_info);
+
+		ImGui_ImplVulkan_CreateFontsTexture(command_buffer);
+
+		VkSubmitInfo end_info = {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &command_buffer,
+		};
+		vkEndCommandBuffer(command_buffer);
+
+		vkQueueSubmit(gfx_queue, 1, &end_info, VK_NULL_HANDLE);
+		vkDeviceWaitIdle(device);
+
+		ImGui_ImplVulkan_DestroyFontUploadObjects();
+	}
+}
+
 auto App::draw(uint32_t frame) -> void
 {
 	uint32_t index = frame % 2;
@@ -1031,6 +1123,35 @@ auto App::draw(uint32_t frame) -> void
 
 	vkCmdDraw(command_buffers[index], vertices_count, 1, 0, 0);
 	vkCmdEndRendering(command_buffers[index]);
+
+	{
+		VkRenderingAttachmentInfo imgui_pass_swapchain_attachment_info = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+			.imageView = swapchain_image_views[image_index],
+			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.resolveMode = VK_RESOLVE_MODE_NONE,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+		};
+
+		VkRenderingInfo imgui_pass_rendering_info = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+			.flags = 0,
+			.renderArea = {
+				.offset = {}, // Zero
+				.extent = window_extent,
+			},
+			.layerCount = 1,
+			.viewMask = 0,
+			.colorAttachmentCount = 1,
+			.pColorAttachments = &imgui_pass_swapchain_attachment_info,
+		};
+		vkCmdBeginRendering(command_buffers[index], &imgui_pass_rendering_info);
+		ImGui::Render();
+		ImDrawData *draw_data = ImGui::GetDrawData();
+		ImGui_ImplVulkan_RenderDrawData(draw_data, command_buffers[index]);
+		vkCmdEndRendering(command_buffers[index]);
+	}
 
 	VkImageMemoryBarrier present_transition_barrier {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
