@@ -79,6 +79,8 @@ private:
 	bool is_running = false;
 	uint32_t frame_index;
 
+	uint32_t vertices_count;
+
 	auto init_vulkan() -> bool;
 	auto create_instance() -> void;
 	auto create_device() -> void;

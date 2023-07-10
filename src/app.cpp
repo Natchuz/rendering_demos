@@ -9,6 +9,9 @@
 
 #include <glm/gtx/transform.hpp>
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include<tiny_obj_loader.h>
+
 #include "app.h"
 
 App *App::ptr;
@@ -440,7 +443,7 @@ auto App::create_buffers() -> void {
 	{
 		VkBufferCreateInfo vertex_buffer_create_info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = 1000,
+			.size = 70000,
 			.usage = VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 		};
 
@@ -488,8 +491,54 @@ const std::vector<float> VERTEX_DATA = {
 };
 
 auto App::upload_vertex_data() -> void {
-	memcpy(vertex_buffer_ptr, VERTEX_DATA.data(), VERTEX_DATA.size() * sizeof(float));
-	vmaFlushAllocation(vma_allocator, vertex_buffer.allocation, 0, VERTEX_DATA.size() * sizeof(float));
+	tinyobj::attrib_t attrib;
+	std::vector<tinyobj::shape_t> shapes;
+	std::vector<tinyobj::material_t> materials;
+	std::string warn, err;
+	auto filename = "assets/suzanne/suzanne.obj";
+
+	tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, filename);
+
+	if (!warn.empty())
+	{
+		std::cout << "WARN: " << warn << std::endl;
+	}
+
+	if (!err.empty())
+	{
+		throw std::runtime_error(err);
+	}
+
+	std::vector<float> vertex_data = {};
+	vertices_count = 0;
+
+	for (auto &shape : shapes)
+	{
+		size_t index_offset = 0;
+
+		for (size_t face = 0; face < shape.mesh.num_face_vertices.size(); face++)
+		{
+			for (size_t vert = 0; vert < 3; vert++)
+			{
+				tinyobj::index_t idx = shape.mesh.indices[index_offset + vert];
+
+				tinyobj::real_t vx = attrib.vertices[3 * idx.vertex_index + 0];
+				tinyobj::real_t vy = attrib.vertices[3 * idx.vertex_index + 1];
+				tinyobj::real_t vz = attrib.vertices[3 * idx.vertex_index + 2];
+				tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
+				tinyobj::real_t ny = attrib.normals[3 * idx.normal_index + 1];
+				tinyobj::real_t nz = attrib.normals[3 * idx.normal_index + 2];
+
+				vertex_data.insert(vertex_data.end(), {vx, vy, vz, nx, ny, nz});
+				vertices_count += 1;
+			}
+
+			index_offset += 3;
+		}
+	}
+
+	memcpy(vertex_buffer_ptr, vertex_data.data(), vertex_data.size() * sizeof(float));
+	vmaFlushAllocation(vma_allocator, vertex_buffer.allocation, 0, vertex_data.size() * sizeof(float));
 }
 
 
@@ -909,7 +958,7 @@ auto App::draw(uint32_t frame) -> void
 	VkDeviceSize offsets = 0;
 	vkCmdBindVertexBuffers(command_buffers[index], 0, 1, &vertex_buffer.buffer, &offsets);
 
-	vkCmdDraw(command_buffers[index], 3, 1, 0, 0);
+	vkCmdDraw(command_buffers[index], vertices_count, 1, 0, 0);
 	vkCmdEndRendering(command_buffers[index]);
 
 	VkImageMemoryBarrier present_transition_barrier {

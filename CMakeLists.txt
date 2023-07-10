@@ -54,5 +54,8 @@ target_link_libraries(rendering_demos PRIVATE glfw)
 find_package(glm CONFIG REQUIRED)
 target_link_libraries(rendering_demos PRIVATE glm::glm)
 
+find_package(tinyobjloader CONFIG REQUIRED)
+target_link_libraries(rendering_demos PRIVATE tinyobjloader::tinyobjloader)
+
 find_package(unofficial-vulkan-memory-allocator CONFIG REQUIRED)
 target_link_libraries(rendering_demos PRIVATE unofficial::vulkan-memory-allocator::vulkan-memory-allocator)
