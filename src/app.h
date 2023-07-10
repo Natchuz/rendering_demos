@@ -20,6 +20,11 @@ struct AllocatedBuffer {
 	VmaAllocation allocation;
 };
 
+struct AllocatedImage {
+	VkImage image;
+	VmaAllocation allocation;
+};
+
 class App
 {
 public:
@@ -61,6 +66,9 @@ private:
 	AllocatedBuffer frame_data_buffer;
 	void* frame_data_buffer_ptr;
 
+	AllocatedImage depth_buffer;
+	VkImageView depth_buffer_view;
+
 	VkDescriptorSetLayout per_frame_descriptor_set_layout;
 	VkDescriptorPool descriptor_pool;
 	VkDescriptorSet per_frame_descriptor_set;
@@ -90,6 +98,7 @@ private:
 	auto create_command_buffers() -> void;
 	auto create_buffers() -> void;
 	auto upload_vertex_data() -> void;
+	auto create_depth_buffer() -> void;
 	auto create_descriptors() -> void;
 	auto create_sync_objects() -> void;
 	auto create_shaders() -> void;

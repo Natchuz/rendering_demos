@@ -75,6 +75,7 @@ auto App::init_vulkan() -> bool
 	create_command_buffers();
 	create_buffers();
 	upload_vertex_data();
+	create_depth_buffer();
 	create_descriptors();
 	create_sync_objects();
 	create_shaders();
@@ -542,6 +543,53 @@ auto App::upload_vertex_data() -> void {
 }
 
 
+auto App::create_depth_buffer() -> void {
+	VkImageCreateInfo image_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.flags = 0,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_D32_SFLOAT,
+		.extent = { window_extent.width, window_extent.height, 1 },
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+
+	VmaAllocationCreateInfo vma_allocation_info = {
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+	};
+
+	vmaCreateImage(vma_allocator, &image_create_info, &vma_allocation_info,
+				   &depth_buffer.image, &depth_buffer.allocation,
+				   nullptr);
+
+	VkImageViewCreateInfo image_view_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = depth_buffer.image,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = VK_FORMAT_D32_SFLOAT,
+		.components = {
+			.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+		},
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+	};
+
+	vkCreateImageView(device, &image_view_create_info, nullptr, &depth_buffer_view);
+}
+
 auto App::create_descriptors() -> void {
 
 	{
@@ -790,8 +838,17 @@ auto App::create_pipeline() -> void
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 		.colorAttachmentCount = 1,
 		.pColorAttachmentFormats = &swapchain_image_format,
-		.depthAttachmentFormat = VK_FORMAT_UNDEFINED,
+		.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT,
 		.stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+	};
+
+	VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = true,
+		.depthWriteEnable = true,
+		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+		.depthBoundsTestEnable = false,
+		.stencilTestEnable = false,
 	};
 
 	VkGraphicsPipelineCreateInfo pipeline_create_info = {
@@ -805,6 +862,7 @@ auto App::create_pipeline() -> void
 		.pViewportState = &viewport_state,
 		.pRasterizationState = &rasterization_state,
 		.pMultisampleState = &multisample_state,
+		.pDepthStencilState = &depth_stencil_state,
 		.pColorBlendState = &color_blend_state,
 		.pDynamicState = &dynamic_state,
 		.layout = pipeline_layout,
@@ -906,7 +964,7 @@ auto App::draw(uint32_t frame) -> void
 		1, &render_transition_barrier);
 
 
-	VkClearValue clear_value = { .color = { .float32 = {0, 0, 0, 1} } };
+	VkClearValue color_clear_value = { .color = { .float32 = {0, 0, 0.2, 1} } };
 
 	VkRenderingAttachmentInfo swapchain_attachment_info = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -915,7 +973,19 @@ auto App::draw(uint32_t frame) -> void
 		.resolveMode = VK_RESOLVE_MODE_NONE,
 		.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-		.clearValue = clear_value,
+		.clearValue = color_clear_value,
+	};
+
+	VkClearValue depth_clear_value = { .depthStencil = { .depth = 1 } };
+
+	VkRenderingAttachmentInfo depth_attachment_info = {
+		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+		.imageView = depth_buffer_view,
+		.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		.resolveMode = VK_RESOLVE_MODE_NONE,
+		.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+		.clearValue = depth_clear_value,
 	};
 
 	VkRenderingInfo rendering_info = {
@@ -929,6 +999,7 @@ auto App::draw(uint32_t frame) -> void
 		.viewMask = 0,
 		.colorAttachmentCount = 1,
 		.pColorAttachments = &swapchain_attachment_info,
+		.pDepthAttachment = &depth_attachment_info,
 	};
 
 	VkViewport viewport = {
