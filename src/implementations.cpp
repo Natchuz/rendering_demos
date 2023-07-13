@@ -7,3 +7,6 @@
 
 #define VMA_IMPLEMENTATION
 #include<vk_mem_alloc.h>
+
+#define SPDLOG_HEADER_ONLY
+#include<spdlog/spdlog.h>

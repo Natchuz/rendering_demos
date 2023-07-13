@@ -6,6 +6,7 @@
 
 #include<vk_mem_alloc.h>
 
+#include <spdlog/spdlog.h>
 #include <glm/gtx/transform.hpp>
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_vulkan.h>
@@ -20,8 +21,9 @@
 
 auto App::entry() -> void
 {
+	spdlog::info("Rendering demos startup");
+
 #if LIVEPP_ENABLED
-	std::cout << "Live++ enabled\n";
 	lpp::LppDefaultAgent lppAgent = lpp::LppCreateDefaultAgent(L"sdk/LivePP");
 
 	if (!lpp::LppIsValidDefaultAgent(&lppAgent))
@@ -29,6 +31,7 @@ auto App::entry() -> void
 		throw std::runtime_error("Live++ error");
 	}
 	lppAgent.EnableModule(lpp::LppGetCurrentModulePath(), lpp::LPP_MODULES_OPTION_ALL_IMPORT_MODULES, nullptr, nullptr);
+
 #endif
 
 	platform->window_init(Window_Params{.name = "Rendering demos", .size = {1280, 720}});
