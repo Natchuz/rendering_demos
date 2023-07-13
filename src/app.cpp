@@ -9,7 +9,6 @@
 
 #include <glm/gtx/transform.hpp>
 #include <imgui/imgui.h>
-#include <imgui/backends/imgui_impl_glfw.h>
 #include <imgui/backends/imgui_impl_vulkan.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
@@ -17,53 +16,20 @@
 
 #include "app.h"
 
-App *App::ptr;
-
-auto init_global_libs() -> bool
+auto App::entry() -> void
 {
-	bool glfw_initialized = glfwInit();
-	return glfw_initialized;
-}
+	platform->window_init(Window_Params{.name = "Rendering demos", .size = {1280, 720}});
+	init_vulkan();
 
-auto deinit_global_libs() -> void
-{
-	glfwTerminate();
-}
-
-auto App::init() -> bool
-{
-	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // Disable OpenGL things
-	glfw_window = glfwCreateWindow(1280, 720, "Rendering demos", nullptr, nullptr);
-	glfwSetWindowUserPointer(glfw_window, this);
-	uint32_t glfw_extensions_count;
-	auto glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extensions_count);
-	required_glfw_extensions = std::span{glfw_extensions, glfw_extensions_count};
-
-	if (!init_vulkan()) goto glfw_error;
-	return true;
-
-	glfw_error:
-	glfwDestroyWindow(glfw_window);
-
-	return false;
-}
-
-auto App::deinit() -> void
-{
-	glfwDestroyWindow(glfw_window);
-}
-
-auto App::run() -> void
-{
 	is_running = true;
 	frame_index = 0;
 
-	while (!glfwWindowShouldClose(glfw_window))
+	while (!platform->window_requested_to_close())
 	{
-		glfwPollEvents();
+		platform->poll_events();
 
 		ImGui_ImplVulkan_NewFrame();
-		ImGui_ImplGlfw_NewFrame();
+		platform->imgui_new_frame();
 		ImGui::NewFrame();
 
 		bool yes = true;
@@ -75,6 +41,8 @@ auto App::run() -> void
 	}
 
 	is_running = false;
+
+	platform->window_destroy();
 }
 
 auto App::init_vulkan() -> bool
@@ -130,14 +98,16 @@ auto App::create_instance() -> void
 		"VK_LAYER_KHRONOS_validation"
 	};
 
+	auto required_platform_extensions = platform->get_required_extensions();
+
 	VkInstanceCreateInfo instance_create_info = {
 		.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
 		.pNext = &validation_features,
 		.pApplicationInfo = &application_info,
 		.enabledLayerCount = (uint32_t) enabled_validation_layers.size(),
 		.ppEnabledLayerNames = enabled_validation_layers.data(),
-		.enabledExtensionCount = (uint32_t) required_glfw_extensions.size(),
-		.ppEnabledExtensionNames = required_glfw_extensions.data(),
+		.enabledExtensionCount = static_cast<uint32_t>(required_platform_extensions.size()),
+		.ppEnabledExtensionNames = required_platform_extensions.data(),
 	};
 
 	auto vk_err = vkCreateInstance(&instance_create_info, nullptr, &instance);
@@ -317,12 +287,12 @@ auto App::create_allocator() -> void {
 
 auto App::create_surface() -> void
 {
-	if (!glfwGetPhysicalDevicePresentationSupport(instance, physical_device, gfx_queue_family_index))
+	if (!platform->check_presentation_support(instance, physical_device, gfx_queue_family_index))
 	{
-		throw std::runtime_error("GLFW does not support vulkan!");
+		throw std::runtime_error("Platform does not support presentation!");
 	}
 
-	glfwCreateWindowSurface(instance, glfw_window, nullptr, &surface);
+	platform->create_surface(instance, &surface);
 }
 
 auto App::create_swapchain(bool recreate) -> void
@@ -365,9 +335,9 @@ auto App::create_swapchain(bool recreate) -> void
 
 	// Special value indicating that surface size will be determined by swapchain
 	if (window_extent.width == 0xFFFFFFFF && window_extent.width == 0xFFFFFFFF) {
-		int32_t width, height;
-		glfwGetFramebufferSize(glfw_window, &width, &height);
-		window_extent = {static_cast<uint32_t>(width),static_cast<uint32_t>(height)};
+		auto size = platform->window_get_size();
+
+		window_extent = {size.width, size.height};
 		window_extent.width = std::clamp(
 			window_extent.width,
 			surface_capabilities.minImageExtent.width,
@@ -923,7 +893,7 @@ auto App::init_imgui() -> void {
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 	io.Fonts->AddFontDefault();
 
-	ImGui_ImplGlfw_InitForVulkan(glfw_window, true);
+	platform->imgui_init();
 
 	ImGui_ImplVulkan_InitInfo init_info = {
 		.Instance = instance,

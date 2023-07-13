@@ -4,12 +4,49 @@
 #include<span>
 
 #include<vulkan/vulkan.h>
-#include<GLFW/glfw3.h>
 #include<vk_mem_alloc.h>
 #include<glm/matrix.hpp>
 
-auto init_global_libs() -> bool;
-auto deinit_global_libs() -> void;
+
+struct Size
+{
+	uint32_t width;
+	uint32_t height;
+};
+
+struct Window_Params
+{
+	std::string name;
+	Size size;
+};
+
+class Platform
+{
+public:
+
+	virtual void poll_events() = 0;
+
+	// Windowing functions
+	// window_init and window_destroy will be called _exactly_ once (only one window is supported at the moment)
+	virtual void window_init(Window_Params params) = 0;
+	virtual void window_destroy() = 0;
+	virtual void window_set_name(std::string name) = 0;
+	virtual void window_set_size(uint32_t width, uint32_t height) = 0;
+	virtual Size window_get_size() = 0;
+	virtual bool window_requested_to_close() = 0;
+
+	virtual bool check_presentation_support(VkInstance instance,
+											VkPhysicalDevice physical_device,
+											uint32_t family_queue) = 0;
+	virtual void create_surface(VkInstance instance, VkSurfaceKHR* surface) = 0;
+	virtual std::span<const char *> get_required_extensions() = 0; // Return required vulkan extensions
+
+	// ImGui related functions.
+	// Temporary, will be replaced by custom, universal implementation on top of abstracted input, windowing, etc.
+	virtual void imgui_init() = 0;
+	virtual void imgui_shutdown() = 0;
+	virtual void imgui_new_frame() = 0;
+};
 
 struct FrameData {
 	glm::mat4x4 render_matrix;
@@ -28,68 +65,67 @@ struct AllocatedImage {
 class App
 {
 public:
-	static App *ptr;
+	explicit App(Platform* platform) { // NOLINT(cppcoreguidelines-pro-type-member-init)
+		this->platform = platform;
+	}
 
-	auto init() -> bool;
-	auto deinit() -> void;
-	auto run() -> void;
+	auto entry() -> void;
 
 private:
-	GLFWwindow *glfw_window;
-	std::span<const char *> required_glfw_extensions;
+	Platform* platform;
 
-	VkInstance instance;
-	uint32_t instance_version;
+	VkInstance instance{};
+	uint32_t instance_version{};
 
-	VkPhysicalDevice physical_device;
-	VkPhysicalDeviceLimits physical_device_limits;
-	VkDevice device;
-	VkQueue gfx_queue;
-	uint32_t gfx_queue_family_index;
+	VkPhysicalDevice physical_device{};
+	VkPhysicalDeviceLimits physical_device_limits{};
+	VkDevice device{};
+	VkQueue gfx_queue{};
+	uint32_t gfx_queue_family_index{};
 
-	VmaAllocator vma_allocator;
+	VmaAllocator vma_allocator{};
 
-	VkSurfaceKHR surface;
+	VkSurfaceKHR surface{};
 
-	VkSwapchainKHR swapchain;
+	VkSwapchainKHR swapchain{};
 	VkFormat swapchain_image_format;
-	uint32_t swapchain_images_count;
+	uint32_t swapchain_images_count{};
 	std::vector<VkImage> swapchain_images;
 	std::vector<VkImageView> swapchain_image_views;
 
-	VkCommandPool command_pool;
+	VkCommandPool command_pool{};
 	std::vector<VkCommandBuffer> command_buffers;
 
-	AllocatedBuffer vertex_buffer;
-	void* vertex_buffer_ptr;
+	AllocatedBuffer vertex_buffer{};
+	void* vertex_buffer_ptr{};
 
-	AllocatedBuffer frame_data_buffer;
-	void* frame_data_buffer_ptr;
+	AllocatedBuffer frame_data_buffer{};
+	void* frame_data_buffer_ptr{};
 
-	AllocatedImage depth_buffer;
-	VkImageView depth_buffer_view;
+	AllocatedImage depth_buffer{};
+	VkImageView depth_buffer_view{};
 
-	VkDescriptorSetLayout per_frame_descriptor_set_layout;
-	VkDescriptorPool descriptor_pool;
-	VkDescriptorSet per_frame_descriptor_set;
+	VkDescriptorSetLayout per_frame_descriptor_set_layout{};
+	VkDescriptorPool descriptor_pool{};
+	VkDescriptorSet per_frame_descriptor_set{};
 
-	VkSemaphore render_semaphore[2], present_semaphore[2];
-	VkFence render_fence[2];
+	VkSemaphore render_semaphore[2]{}, present_semaphore[2]{};
+	VkFence render_fence[2]{};
 	
-	VkShaderModule vertex_shader;
-	VkShaderModule fragment_shader;
+	VkShaderModule vertex_shader{};
+	VkShaderModule fragment_shader{};
 
-	VkExtent2D window_extent;
+	VkExtent2D window_extent{};
 
-	VkPipelineLayout pipeline_layout;
-	VkPipeline pipeline;
+	VkPipelineLayout pipeline_layout{};
+	VkPipeline pipeline{};
 
-	VkDescriptorPool imgui_descriptor_pool;
+	VkDescriptorPool imgui_descriptor_pool{};
 
 	bool is_running = false;
-	uint32_t frame_index;
+	uint32_t frame_index{};
 
-	uint32_t vertices_count;
+	uint32_t vertices_count{};
 
 	auto init_vulkan() -> bool;
 	auto create_instance() -> void;

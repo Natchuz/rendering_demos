@@ -8,7 +8,7 @@ project("Rendering demos")
 set(CMAKE_CXX_STANDARD 20)
 
 set(SRCS
-		src/main.cpp
+		src/glfw_platform.cpp
 		src/app.h
 		src/app.cpp
 		)
