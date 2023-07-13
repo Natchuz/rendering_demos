@@ -24,7 +24,7 @@ set_source_files_properties(src/shaders/triangle_frag.glsl PROPERTIES ShaderType
 # ====== Building ======
 # ======================
 
-# Compile shaders
+# --- Shaders ---
 add_custom_target(shaders)
 file(MAKE_DIRECTORY data/shaders)
 foreach(FILE ${SHADERS_SRCS})
@@ -39,7 +39,7 @@ foreach(FILE ${SHADERS_SRCS})
 			VERBATIM)
 endforeach(FILE)
 
-# Renderer itself
+# --- Renderer itself ---
 add_executable(rendering_demos ${SRCS})
 target_include_directories(rendering_demos PRIVATE "src")
 add_dependencies(rendering_demos shaders)
@@ -48,8 +48,33 @@ target_include_directories(rendering_demos PRIVATE "vendor")
 
 find_package(Vulkan REQUIRED)
 target_link_libraries(rendering_demos PRIVATE Vulkan::Vulkan)
+set(DEFINITIONS)
 
-# ImGui
+# --- SDKs ---
+target_include_directories(rendering_demos PRIVATE "sdk")
+
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/sdk/LivePP)
+	message(STATUS "Live++ detected in sdk/LivePP")
+
+	if(MSVC)
+		target_compile_options(rendering_demos PRIVATE /Z7 /Gm- /Gy /Gw)
+	endif()
+
+	if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+		target_compile_options(rendering_demos PRIVATE
+				-g -gcodeview -fms-hotpatch -ffunction-sections -Xclang -mno-constructor-aliases)
+	endif()
+
+	target_link_options(rendering_demos PRIVATE /FUNCTIONPADMIN /OPT:NOREF /OPT:NOICF /DEBUG:FULL)
+
+	list(APPEND DEFINITIONS LIVEPP_ENABLED=1)
+elseif()
+	message(STATUS "Live++ not present in sdk/LivePP. Ignoring")
+endif()
+
+target_compile_definitions(rendering_demos PRIVATE ${DEFINITIONS})
+
+# --- ImGui ---
 set(IMGUI_SRCS
 		vendor/imgui/imgui.cpp
 		vendor/imgui/imgui_demo.cpp

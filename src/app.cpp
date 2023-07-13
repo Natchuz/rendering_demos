@@ -12,10 +12,25 @@
 
 #include<tiny_obj_loader.h>
 
+#if LIVEPP_ENABLED
+#include <LivePP/API/LPP_API_x64_CPP.h>
+#endif
+
 #include "app.h"
 
 auto App::entry() -> void
 {
+#if LIVEPP_ENABLED
+	std::cout << "Live++ enabled\n";
+	lpp::LppDefaultAgent lppAgent = lpp::LppCreateDefaultAgent(L"sdk/LivePP");
+
+	if (!lpp::LppIsValidDefaultAgent(&lppAgent))
+	{
+		throw std::runtime_error("Live++ error");
+	}
+	lppAgent.EnableModule(lpp::LppGetCurrentModulePath(), lpp::LPP_MODULES_OPTION_ALL_IMPORT_MODULES, nullptr, nullptr);
+#endif
+
 	platform->window_init(Window_Params{.name = "Rendering demos", .size = {1280, 720}});
 	init_vulkan();
 
@@ -41,6 +56,9 @@ auto App::entry() -> void
 	is_running = false;
 
 	platform->window_destroy();
+#if LIVEPP_ENABLED
+	lpp::LppDestroyDefaultAgent(&lppAgent);
+#endif
 }
 
 auto App::init_vulkan() -> bool
