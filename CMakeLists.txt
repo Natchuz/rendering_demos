@@ -11,7 +11,7 @@ set(SRCS
 		src/glfw_platform.cpp
 		src/app.h
 		src/app.cpp
-		)
+		src/implementations.cpp)
 
 set(SHADERS_SRCS
 		src/shaders/triangle_frag.glsl

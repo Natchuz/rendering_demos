@@ -4,14 +4,12 @@
 #include<limits>
 #include<fstream>
 
-#define VMA_IMPLEMENTATION
 #include<vk_mem_alloc.h>
 
 #include <glm/gtx/transform.hpp>
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_vulkan.h>
 
-#define TINYOBJLOADER_IMPLEMENTATION
 #include<tiny_obj_loader.h>
 
 #include "app.h"
