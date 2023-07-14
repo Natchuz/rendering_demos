@@ -12,6 +12,7 @@
 #include <imgui/backends/imgui_impl_vulkan.h>
 
 #include<tiny_obj_loader.h>
+#include<tracy/tracy/Tracy.hpp>
 
 #if LIVEPP_ENABLED
 #include <LivePP/API/LPP_API_x64_CPP.h>
@@ -957,6 +958,8 @@ auto App::init_imgui() -> void {
 
 auto App::draw(uint32_t frame) -> void
 {
+	ZoneScopedN("Draw");
+
 	uint32_t index = frame % 2;
 
 	vkWaitForFences(device, 1, &render_fence[index], true, UINT64_MAX);

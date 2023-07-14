@@ -24,6 +24,24 @@ set_source_files_properties(src/shaders/triangle_frag.glsl PROPERTIES ShaderType
 # ====== Building ======
 # ======================
 
+# --- Options & Validation ---
+set(LIVEPP OFF CACHE BOOL "Enable Live++ (ON/OFF)")
+set(PROFILER "NONE" CACHE STRING "Selected profiler (NONE/TRACY)")
+
+if(NOT PROFILER MATCHES "^(NONE|TRACY)$")
+	message(FATAL_ERROR "Invalid option PROFILER=${PROFILER}")
+endif()
+
+if(PROFILER MATCHES "^(TRACY)$")
+	set(PROFILER_SET ON)
+elseif()
+	set(PROFILER_SET OFF)
+endif()
+
+if(PROFILER_SET AND LIVEPP)
+	message(FATAL_ERROR "Enabling Live++ is incompatible with profiler!")
+endif()
+
 # --- Shaders ---
 add_custom_target(shaders)
 file(MAKE_DIRECTORY data/shaders)
@@ -53,23 +71,28 @@ set(DEFINITIONS)
 # --- SDKs ---
 target_include_directories(rendering_demos PRIVATE "sdk")
 
-if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/sdk/LivePP)
-	message(STATUS "Live++ detected in sdk/LivePP")
+if(LIVEPP)
+	if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/sdk/LivePP)
+		if(MSVC)
+			target_compile_options(rendering_demos PRIVATE /Z7 /Gm- /Gy /Gw)
+		endif()
 
-	if(MSVC)
-		target_compile_options(rendering_demos PRIVATE /Z7 /Gm- /Gy /Gw)
+		if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+			target_compile_options(rendering_demos PRIVATE
+					-g -gcodeview -fms-hotpatch -ffunction-sections -Xclang -mno-constructor-aliases)
+		endif()
+
+		target_link_options(rendering_demos PRIVATE /FUNCTIONPADMIN /OPT:NOREF /OPT:NOICF /DEBUG:FULL)
+		list(APPEND DEFINITIONS LIVEPP_ENABLED=1)
+
+		message(STATUS "Live++ enabled.")
+	elseif()
+		message(FATAL_ERROR "Live++ enabled with LIVEPP=ON, but SDK is not configured (present)!")
 	endif()
+endif()
 
-	if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-		target_compile_options(rendering_demos PRIVATE
-				-g -gcodeview -fms-hotpatch -ffunction-sections -Xclang -mno-constructor-aliases)
-	endif()
-
-	target_link_options(rendering_demos PRIVATE /FUNCTIONPADMIN /OPT:NOREF /OPT:NOICF /DEBUG:FULL)
-
-	list(APPEND DEFINITIONS LIVEPP_ENABLED=1)
-elseif()
-	message(STATUS "Live++ not present in sdk/LivePP. Ignoring")
+if(PROFILER_SET)
+	list(APPEND DEFINITIONS TRACY_ENABLE)
 endif()
 
 target_compile_definitions(rendering_demos PRIVATE ${DEFINITIONS})

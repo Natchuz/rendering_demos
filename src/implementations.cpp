@@ -1,6 +1,8 @@
 //
 // Implementations for all header-only libraries
-//
+//]
+
+#include "tracy/TracyClient.cpp"
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include<tiny_obj_loader.h>
