@@ -65,8 +65,10 @@ add_dependencies(rendering_demos shaders)
 target_include_directories(rendering_demos PRIVATE "vendor")
 
 find_package(Vulkan REQUIRED)
-target_link_libraries(rendering_demos PRIVATE Vulkan::Vulkan)
-set(DEFINITIONS)
+target_link_libraries(rendering_demos PRIVATE Vulkan::Headers)
+set(DEFINITIONS VK_NO_PROTOTYPES)
+
+target_include_directories(rendering_demos PRIVATE "vendor/volk")
 
 # --- SDKs ---
 target_include_directories(rendering_demos PRIVATE "sdk")
@@ -109,7 +111,9 @@ set(IMGUI_SRCS
 		)
 add_library(imgui ${IMGUI_SRCS})
 target_include_directories(imgui PRIVATE "vendor/imgui")
-target_link_libraries(imgui PRIVATE Vulkan::Vulkan)
+target_include_directories(imgui PRIVATE "vendor/volk")
+target_compile_definitions(imgui PRIVATE VK_NO_PROTOTYPES)
+target_link_libraries(imgui PRIVATE Vulkan::Headers)
 target_link_libraries(imgui PRIVATE glfw)
 
 target_include_directories(rendering_demos PRIVATE "vendor/imgui")

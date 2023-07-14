@@ -3,8 +3,10 @@
 #include<vector>
 #include<span>
 
-#include<vulkan/vulkan.h>
+#include <vulkan/vulkan.h>
+#include<volk.h>
 #include<vk_mem_alloc.h>
+
 #include<glm/matrix.hpp>
 
 
@@ -76,6 +78,7 @@ private:
 
 	VkInstance instance{};
 	uint32_t instance_version{};
+	VkDebugUtilsMessengerEXT debug_util_messenger{};
 
 	VkPhysicalDevice physical_device{};
 	VkPhysicalDeviceLimits physical_device_limits{};

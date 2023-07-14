@@ -4,7 +4,7 @@
 #include<limits>
 #include<fstream>
 
-#include<vk_mem_alloc.h>
+#include "app.h"
 
 #include <spdlog/spdlog.h>
 #include <glm/gtx/transform.hpp>
@@ -13,12 +13,11 @@
 
 #include<tiny_obj_loader.h>
 #include<tracy/tracy/Tracy.hpp>
+#include <set>
 
 #if LIVEPP_ENABLED
 #include <LivePP/API/LPP_API_x64_CPP.h>
 #endif
-
-#include "app.h"
 
 auto App::entry() -> void
 {
@@ -86,13 +85,103 @@ auto App::init_vulkan() -> bool
 	return true;
 }
 
+// Logger for Vulkan's EXT_debug_utils
+// As written in specs, will always return false.
+static VKAPI_ATTR VkBool32 VKAPI_CALL debug_utils_messenger_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+															  VkDebugUtilsMessageTypeFlagsEXT message_type,
+															  const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
+															  void *user_data)
+{
+#ifndef ENABLE_VULKAN_LOADER_MESSAGES
+	if (callback_data->messageIdNumber == 0) // Loader messages usually have id number = 0
+	{
+		return false;
+	}
+#endif
+
+	spdlog::level::level_enum level;
+
+	// Handle these in this particular order, since if e.g. message has error bit and verbose bit,
+	// we should report this as error
+	if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+	{
+		level = spdlog::level::err;
+	}
+	else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+	{
+		level = spdlog::level::warn;
+	}
+	else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
+	{
+		level = spdlog::level::info;
+	}
+	else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT)
+	{
+		level = spdlog::level::trace;
+	} else { assert(false); }
+
+	spdlog::log(level, "[{}]: {}", callback_data->messageIdNumber, callback_data->pMessage);
+	return false;
+}
+
+const std::set<std::string> INSTANCE_REQUIRED_EXTENSIONS = {
+	VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+};
+
 auto App::create_instance() -> void
 {
+	ZoneScopedN("Instance creation");
+
+	// Load base pointers
+	volkInitialize();
+
 	vkEnumerateInstanceVersion(&instance_version);
 	if (instance_version < VK_API_VERSION_1_3)
 	{
 		throw std::runtime_error("Unsupported vulkan version");
 	}
+
+	std::set<std::string> required_extensions = INSTANCE_REQUIRED_EXTENSIONS;
+
+	// Platform extensions are required
+	const auto required_platform_extensions = platform->get_required_extensions();
+	required_extensions.insert(required_platform_extensions.begin(), required_platform_extensions.end());
+
+	// Query available extensions
+	uint32_t available_extension_count;
+	vkEnumerateInstanceExtensionProperties(nullptr, &available_extension_count, nullptr);
+	std::vector<VkExtensionProperties> available_extensions(available_extension_count);
+	vkEnumerateInstanceExtensionProperties(nullptr, &available_extension_count,
+										   available_extensions.data());
+
+	// Build list of enabled extensions
+	std::vector<char*> enabled_extensions = {};
+	for (auto &available_extension : available_extensions)
+	{
+		// Ouch, a lot of allocations
+		if (required_extensions.contains(std::string(available_extension.extensionName)))
+		{
+			enabled_extensions.push_back(available_extension.extensionName);
+		}
+	}
+
+	if (enabled_extensions.size() != required_extensions.size())
+	{
+		throw std::runtime_error("Not all required instance extensions are present!");
+	}
+
+	const VkDebugUtilsMessengerCreateInfoEXT debug_utils_messenger_create_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+		.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
+			| VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+			| VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+			| VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+		.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
+			| VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+			| VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT
+			| VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
+		.pfnUserCallback = debug_utils_messenger_callback,
+	};
 
 	const VkApplicationInfo application_info = {
 		.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -103,31 +192,14 @@ auto App::create_instance() -> void
 		.apiVersion = VK_API_VERSION_1_3,
 	};
 
-	std::vector<VkValidationFeatureEnableEXT> enabled_validation_features = {
-		VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT,
-		VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
-	};
-
-	VkValidationFeaturesEXT validation_features = {
-		.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-		.enabledValidationFeatureCount = (uint32_t) enabled_validation_features.size(),
-		.pEnabledValidationFeatures = enabled_validation_features.data(),
-	};
-
-	const std::vector<const char *> enabled_validation_layers = {
-		"VK_LAYER_KHRONOS_validation"
-	};
-
-	auto required_platform_extensions = platform->get_required_extensions();
-
-	VkInstanceCreateInfo instance_create_info = {
+	const VkInstanceCreateInfo instance_create_info = {
 		.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-		.pNext = &validation_features,
+		.pNext = &debug_utils_messenger_create_info,
 		.pApplicationInfo = &application_info,
-		.enabledLayerCount = (uint32_t) enabled_validation_layers.size(),
-		.ppEnabledLayerNames = enabled_validation_layers.data(),
-		.enabledExtensionCount = static_cast<uint32_t>(required_platform_extensions.size()),
-		.ppEnabledExtensionNames = required_platform_extensions.data(),
+		.enabledLayerCount = 0,
+		.ppEnabledLayerNames = nullptr,
+		.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size()),
+		.ppEnabledExtensionNames = enabled_extensions.data(),
 	};
 
 	auto vk_err = vkCreateInstance(&instance_create_info, nullptr, &instance);
@@ -140,18 +212,17 @@ auto App::create_instance() -> void
 		case VK_ERROR_EXTENSION_NOT_PRESENT:
 			throw std::runtime_error("Extensions not present!");
 		case VK_ERROR_INCOMPATIBLE_DRIVER:
-			throw std::runtime_error("Incompatibilee driver!");
+			throw std::runtime_error("Incompatible driver!");
 		case VK_ERROR_INITIALIZATION_FAILED:
 			throw std::runtime_error("Initialization failed!");
 		default:
 			throw std::runtime_error("Could not create instance!");
 	}
 
-	std::cout << "Following validation layers loaded (1):\n";
-	for (auto &layer: enabled_validation_layers)
-	{
-		std::cout << "\t" << layer << "\n";
-	}
+	// Load instance and device pointers
+	volkLoadInstance(instance);
+
+	vkCreateDebugUtilsMessengerEXT(instance, &debug_utils_messenger_create_info, nullptr, &debug_util_messenger);
 }
 
 /* Provides string names for [VkPhysicalDeviceType] */
@@ -289,16 +360,48 @@ auto App::create_device() -> void
 
 	vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
 
+	volkLoadDevice(device);
+
 	//	if (vk_err != VK_SUCCESS) {} // TODO: Panic
 
 	vkGetDeviceQueue(device, gfx_queue_family_index, 0, &gfx_queue);
 }
 
 auto App::create_allocator() -> void {
+	VmaVulkanFunctions vulkan_functions = {
+		.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
+		.vkGetDeviceProcAddr = vkGetDeviceProcAddr,
+		.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties,
+		.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties,
+		.vkAllocateMemory = vkAllocateMemory,
+		.vkFreeMemory = vkFreeMemory,
+		.vkMapMemory = vkMapMemory,
+		.vkUnmapMemory = vkUnmapMemory,
+		.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges,
+		.vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges,
+		.vkBindBufferMemory = vkBindBufferMemory,
+		.vkBindImageMemory = vkBindImageMemory,
+		.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements,
+		.vkGetImageMemoryRequirements = vkGetImageMemoryRequirements,
+		.vkCreateBuffer = vkCreateBuffer,
+		.vkDestroyBuffer = vkDestroyBuffer,
+		.vkCreateImage = vkCreateImage,
+		.vkDestroyImage = vkDestroyImage,
+		.vkCmdCopyBuffer = vkCmdCopyBuffer,
+		.vkGetBufferMemoryRequirements2KHR = vkGetBufferMemoryRequirements2KHR,
+		.vkGetImageMemoryRequirements2KHR = vkGetImageMemoryRequirements2KHR,
+		.vkBindBufferMemory2KHR = vkBindBufferMemory2KHR,
+		.vkBindImageMemory2KHR = vkBindImageMemory2KHR,
+		.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2KHR,
+		.vkGetDeviceBufferMemoryRequirements = vkGetDeviceBufferMemoryRequirements,
+		.vkGetDeviceImageMemoryRequirements = vkGetDeviceImageMemoryRequirements,
+	};
+
 	VmaAllocatorCreateInfo create_info = {
 		.flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT, // TODO: add device_address support
 		.physicalDevice = physical_device,
 		.device = device,
+		.pVulkanFunctions = &vulkan_functions,
 		.instance = instance,
 		.vulkanApiVersion = VK_API_VERSION_1_3,
 	};
@@ -929,6 +1032,7 @@ auto App::init_imgui() -> void {
 		.UseDynamicRendering = true,
 		.ColorAttachmentFormat = swapchain_image_format,
 	};
+	//ImGui_ImplVulkan_LoadFunctions();
 	ImGui_ImplVulkan_Init(&init_info, VK_NULL_HANDLE);
 
 	{

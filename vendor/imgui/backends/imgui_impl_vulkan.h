@@ -44,6 +44,10 @@
 #endif
 #include <vulkan/vulkan.h>
 
+// RENDERING DEMOS MOD: make imgui shut up about incompatibilities with volk
+#include <volk.h>
+#undef VK_NO_PROTOTYPES
+
 // Initialization data, for ImGui_ImplVulkan_Init()
 // [Please zero-clear before use!]
 struct ImGui_ImplVulkan_InitInfo
