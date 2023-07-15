@@ -9,6 +9,19 @@
 
 #include<glm/matrix.hpp>
 
+// Note that VkPhysicalDeviceVulkan1xProperties properties may have invalid pNext.
+struct Device_Properties
+{
+	VkPhysicalDeviceProperties properties;
+	VkPhysicalDeviceVulkan11Properties properties11;
+	VkPhysicalDeviceVulkan12Properties properties12;
+	VkPhysicalDeviceVulkan13Properties properties13;
+};
+
+// List of optional features that our renderer support if running on capable device
+struct Renderer_Capabilities
+{
+};
 
 struct Size
 {
@@ -81,7 +94,7 @@ private:
 	VkDebugUtilsMessengerEXT debug_util_messenger{};
 
 	VkPhysicalDevice physical_device{};
-	VkPhysicalDeviceLimits physical_device_limits{};
+	Device_Properties device_properties{};
 	VkDevice device{};
 	VkQueue gfx_queue{};
 	uint32_t gfx_queue_family_index{};

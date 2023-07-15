@@ -225,122 +225,203 @@ auto App::create_instance() -> void
 	vkCreateDebugUtilsMessengerEXT(instance, &debug_utils_messenger_create_info, nullptr, &debug_util_messenger);
 }
 
-/* Provides string names for [VkPhysicalDeviceType] */
-const char *deviceTypesNames[5] = {
-	"OTHER",
-	"INTEGRATED_GPU",
-	"DISCRETE_GPU",
-	"VIRTUAL_GPU",
-	"CPU"
+const std::set<std::string> DEVICE_REQUIRED_EXTENSIONS = {
+	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
 auto App::create_device() -> void
 {
-	VkPhysicalDeviceProperties physical_device_properties;
-	uint32_t physical_device_count, enumerated = 0;
-	VkPhysicalDevice pdevice_buffer[10];
-	VkResult enum_result;
+	ZoneScopedN("Device selection and creation");
 
-	std::cout << "Found following physical devices:\n";
-	do
+	// Query available physical devices
+	uint32_t available_physical_devices_count;
+	vkEnumeratePhysicalDevices(instance, &available_physical_devices_count, nullptr);
+	std::vector<VkPhysicalDevice> available_physical_devices(available_physical_devices_count);
+	vkEnumeratePhysicalDevices(instance, &available_physical_devices_count, available_physical_devices.data());
+
+	// Device selection algorithm presented here is completely over the top and unnecessary, since a simple
+	// heuristic of "just pick the first discrete GPU" would be more than fine, but I kinda felt fancy
+	// and did this monstrosity, which is probably the most specs-certified way there is.
+
+	struct Device_Candidate
 	{
-		physical_device_count = 10;
-		enum_result = vkEnumeratePhysicalDevices(instance, &physical_device_count, pdevice_buffer);
-
-		if ((enumerated == 0 && physical_device_count == 0)
-			|| enum_result == VK_ERROR_OUT_OF_HOST_MEMORY)
-		{
-			break; // TODO: Panic
-		}
-
-		for (uint8_t i = 0; i < physical_device_count; i++)
-		{
-			VkPhysicalDevice candidate = pdevice_buffer[i];
-			VkPhysicalDeviceProperties candidate_props;
-			vkGetPhysicalDeviceProperties(candidate, &candidate_props);
-
-			/* Compare physical device. For now will select first discrete gpu */
-			if (enumerated == 0)
-			{
-				physical_device = candidate;
-				physical_device_properties = candidate_props;
-			}
-
-			if (candidate_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
-				&& physical_device_properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-			{
-				physical_device = candidate;
-				physical_device_properties = candidate_props;
-			}
-
-			std::cout << "\t" << enumerated << ":\n"
-					  << "\t\tAPI version:         "
-					  << VK_API_VERSION_VARIANT(candidate_props.apiVersion) << "."
-					  << VK_API_VERSION_MAJOR(candidate_props.apiVersion) << "."
-					  << VK_API_VERSION_MINOR(candidate_props.apiVersion) << "."
-					  << VK_API_VERSION_PATCH(candidate_props.apiVersion) << "\n"
-					  << "\t\tDriver version:      " << candidate_props.driverVersion << "\n"
-					  << "\t\tVendor id:           " << candidate_props.vendorID << "\n"
-					  << "\t\tDevice id:           " << candidate_props.deviceID << "\n"
-					  << "\t\tDevice id:           " << candidate_props.driverVersion << "\n"
-					  << "\t\tDevice name:         " << candidate_props.deviceName << "\n"
-					  << "\t\tDevice type:         " << deviceTypesNames[candidate_props.deviceType] << "\n";
-
-			enumerated += 1;
-		}
-
-	} while (enum_result == VK_INCOMPLETE);
-
-	std::cout << "Selected " << physical_device_properties.deviceName << "\n";
-
-	physical_device_limits = physical_device_properties.limits;
-
-	/*
-		Queue selection
-	*/
-	uint32_t queue_family_count;
-	vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
-	auto *queue_family_props = new VkQueueFamilyProperties[queue_family_count];
-	vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_family_props);
-
-	std::cout << "Found following queue families:\n";
-	for (uint32_t i = 0; i < queue_family_count; i++)
-	{
-		std::cout << "\t" << i << ":\n"
-				  << "\t\tFlags:" << "\n";
-		if (queue_family_props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) std::cout << "\t\t\tGRAPHICS\n";
-		if (queue_family_props[i].queueFlags & VK_QUEUE_COMPUTE_BIT) std::cout << "\t\t\tCOMPUTE\n";
-		if (queue_family_props[i].queueFlags & VK_QUEUE_TRANSFER_BIT) std::cout << "\t\t\tTRANSFER\n";
-		if (queue_family_props[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) std::cout << "\t\t\tSPARSE_BINDING\n";
-		if (queue_family_props[i].queueFlags & VK_QUEUE_PROTECTED_BIT) std::cout << "\t\t\tPROTECTED_BIT\n";
-		std::cout << "\t\tQueue Count : " << queue_family_props[i].queueCount << "\n";
-	}
-
-	gfx_queue_family_index = -1;
-	for (uint32_t i = 0; i < queue_family_count; i++)
-	{
-		if (queue_family_props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-		{
-			gfx_queue_family_index = i;
-			break;
-		}
-	}
-	if (gfx_queue_family_index == -1) {} // TOOD: Panic
-	std::cout << "Selected queue family with index: " << gfx_queue_family_index << "\n";
-
-	/*
-		Logic device and queue creation
-	*/
-	float queue_prorities = 1.0;
-	VkDeviceQueueCreateInfo queue_create_info = {
-		.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-		.queueFamilyIndex = gfx_queue_family_index,
-		.queueCount = 1,
-		.pQueuePriorities = &queue_prorities,
+		VkPhysicalDevice physical_device;
+		Device_Properties device_properties;
+		uint32_t gfx_family_queue_index;
+		VkPhysicalDeviceFeatures device_features;
+		VkPhysicalDeviceVulkan11Features device_features11;
+		VkPhysicalDeviceVulkan12Features device_features12;
+		VkPhysicalDeviceVulkan13Features device_features13;
+		Renderer_Capabilities renderer_features;
+		// We need to carry entire VkExtensionProperties, to avoid invalid pointers to extensions' names
+		std::vector<VkExtensionProperties> interested_extensions;
 	};
 
-	const std::vector<const char *> device_extensions = {
-		VK_KHR_SWAPCHAIN_EXTENSION_NAME
+	std::vector<Device_Candidate> candidates = {};
+
+	// Build candidate list by eliminating devices that do not support required extensions, properties, queues etc.
+	for (auto &candidate_device : available_physical_devices)
+	{
+		Device_Candidate candidate = {candidate_device };
+
+		// Query device properties, by linking all required structs
+		candidate.device_properties.properties11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+		candidate.device_properties.properties11.pNext = &candidate.device_properties.properties12;
+		candidate.device_properties.properties12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+		candidate.device_properties.properties12.pNext = &candidate.device_properties.properties13;
+		candidate.device_properties.properties13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
+
+		VkPhysicalDeviceProperties2 properties2 = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+			.pNext = &candidate.device_properties.properties11,
+		};
+
+		vkGetPhysicalDeviceProperties2(candidate_device, &properties2);
+		candidate.device_properties.properties = properties2.properties;
+
+		// Check if required properties2 are supported
+		auto support_vulkan_13 = candidate.device_properties.properties.apiVersion >= VK_API_VERSION_1_3;
+		if (!support_vulkan_13)
+		{
+			continue;
+		}
+
+		// Query device features, by linking all required structs
+		candidate.device_features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+		candidate.device_features11.pNext = &candidate.device_features12;
+		candidate.device_features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+		candidate.device_features12.pNext = &candidate.device_features13;
+		candidate.device_features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+
+		VkPhysicalDeviceFeatures2 features2 = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+			.pNext = &candidate.device_features11,
+		};
+		vkGetPhysicalDeviceFeatures2(candidate_device, &features2);
+		candidate.device_features = features2.features;
+
+		// Check if required features are supported
+		auto dynamic_rendering = candidate.device_features13.dynamicRendering;
+		auto synchronization2 = candidate.device_features13.synchronization2;
+		if (!dynamic_rendering || !synchronization2)
+		{
+			continue;
+		}
+
+		// Query for queue families
+		uint32_t queue_families_count;
+		vkGetPhysicalDeviceQueueFamilyProperties(candidate_device, &queue_families_count, nullptr);
+		std::vector<VkQueueFamilyProperties> queue_families(queue_families_count);
+		vkGetPhysicalDeviceQueueFamilyProperties(candidate_device, &queue_families_count, queue_families.data());
+
+		// Find of family queue that support our required operations
+		int32_t best_queue_find = -1;
+		for (int32_t queue_index = 0; queue_index < queue_families_count; queue_index++)
+		{
+			auto queue = queue_families[queue_index];
+			auto support_required_ops = queue.queueFlags
+				& (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT | VK_QUEUE_TRANSFER_BIT);
+			auto support_presentation = platform->check_presentation_support(instance,
+																			 candidate_device,
+																			 queue_index);
+			if (support_required_ops && support_presentation)
+			{
+				best_queue_find = queue_index;
+				break;
+			}
+		}
+		candidate.gfx_family_queue_index = best_queue_find;
+
+		if (best_queue_find == -1)
+		{
+			continue; // This device doesn't support any queue with required flags
+		}
+
+		// The code here is simplified for a moment as it doesn't look up optional extensions that certain
+		// renderer features might be interested in, so it will need to be changed once I introduce these features.
+
+		// Query extensions
+		uint32_t available_extension_count;
+		vkEnumerateDeviceExtensionProperties(candidate_device, nullptr, &available_extension_count, nullptr);
+		std::vector<VkExtensionProperties> available_extensions(available_extension_count);
+		vkEnumerateDeviceExtensionProperties(candidate_device, nullptr, &available_extension_count,
+											   available_extensions.data());
+
+		candidate.interested_extensions = {};
+		for (auto &available_extension : available_extensions)
+		{
+			// A lot of allocations again :/
+			if (DEVICE_REQUIRED_EXTENSIONS.contains(std::string(available_extension.extensionName)))
+			{
+				candidate.interested_extensions.push_back(available_extension);
+			}
+		}
+
+		if (candidate.interested_extensions.size() != DEVICE_REQUIRED_EXTENSIONS.size())
+		{
+			continue;
+		}
+
+		// Knowing all of these, let's build set of optionals features that may be enabled in our renderer
+		// if proper features, extensions and limits are present.
+		candidate.renderer_features = {};
+
+		candidates.push_back(candidate);
+	}
+
+	if (candidates.empty())
+	{
+		throw std::runtime_error("No suitable device found!");
+	}
+
+	// Sort candidates by number of functions they provide. We'll sort from best to worse, so compare function
+	// will return true if device "b" is worse than "a"
+	auto compare_function = [](const Device_Candidate& a, const Device_Candidate& b) -> bool
+	{
+		// We don't have sophisticated renderer features for now, so let's just compare based on device type
+
+		// That's some complicated criteria... is this possible to simplify?
+		const auto is_a_discr = a.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+		const auto is_a_vi_in = a.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU
+			|| a.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+		const auto is_a_other = a.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_OTHER
+			|| a.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+
+		const auto is_b_discr = b.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+		const auto is_b_vi_in = b.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU
+			|| b.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+		const auto is_b_other = b.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_OTHER
+			|| b.device_properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+
+		auto are_the_same = (is_a_discr && is_b_discr) || (is_a_vi_in && is_b_vi_in) || (is_a_other && is_b_other);
+
+		// Selecting order: Discrete > Virtual | Integrated > Other
+		if (!are_the_same)
+		{
+			// I guess that covers everything?
+			return ((is_b_other && is_a_vi_in) || (is_b_other && is_a_discr) || (is_b_vi_in && is_a_discr));
+		}
+
+		return true;
+	};
+	std::stable_sort(candidates.begin(), candidates.end(), compare_function);
+
+	auto selected_candidate = candidates[0];
+	physical_device = selected_candidate.physical_device;
+	device_properties = selected_candidate.device_properties;
+	gfx_queue_family_index = selected_candidate.gfx_family_queue_index;
+
+	spdlog::info("Selected device: {}", selected_candidate.device_properties.properties.deviceName);
+	spdlog::info("Driver: {}, id {}", selected_candidate.device_properties.properties12.driverName,
+				 selected_candidate.device_properties.properties.driverVersion);
+
+	// Create device
+	float queue_priorities = 1.0;
+	VkDeviceQueueCreateInfo queue_create_info = {
+		.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+		.queueFamilyIndex = selected_candidate.gfx_family_queue_index,
+		.queueCount = 1,
+		.pQueuePriorities = &queue_priorities,
 	};
 
 	VkPhysicalDeviceVulkan13Features device_13_features = {
@@ -349,22 +430,61 @@ auto App::create_device() -> void
 		.dynamicRendering = true,
 	};
 
+	std::vector<char*> enabled_extensions(selected_candidate.interested_extensions.size());
+	std::transform(selected_candidate.interested_extensions.begin(), selected_candidate.interested_extensions.end(),
+				   enabled_extensions.begin(), [](auto &it) { return it.extensionName; });
+
 	VkDeviceCreateInfo device_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		.pNext = &device_13_features,
 		.queueCreateInfoCount = 1,
 		.pQueueCreateInfos = &queue_create_info,
-		.enabledExtensionCount = (uint32_t) device_extensions.size(),
-		.ppEnabledExtensionNames = device_extensions.data(),
+		.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size()),
+		.ppEnabledExtensionNames = enabled_extensions.data(),
 	};
 
-	vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
-
+	auto vk_err = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
+	switch (vk_err)
+	{
+		case VK_SUCCESS:
+			break;
+		case VK_ERROR_FEATURE_NOT_PRESENT:
+			throw std::runtime_error("Feature not present!"); // If this happens, we have a bug!
+		case VK_ERROR_EXTENSION_NOT_PRESENT:
+			throw std::runtime_error("Extensions not present!"); // If this happens, we have a bug!
+		case VK_ERROR_INITIALIZATION_FAILED:
+			throw std::runtime_error("Initialization failed!");
+		default:
+			throw std::runtime_error("Could not create device!");
+	}
 	volkLoadDevice(device);
-
-	//	if (vk_err != VK_SUCCESS) {} // TODO: Panic
-
 	vkGetDeviceQueue(device, gfx_queue_family_index, 0, &gfx_queue);
+
+	// Set debug names for objects
+	VkDebugUtilsObjectNameInfoEXT physical_device_name_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+		.objectType = VK_OBJECT_TYPE_PHYSICAL_DEVICE,
+		.objectHandle = (uint64_t) physical_device,
+		.pObjectName = "main physical device",
+	};
+	vkSetDebugUtilsObjectNameEXT(device, &physical_device_name_info);
+
+	VkDebugUtilsObjectNameInfoEXT device_name_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+		.objectType = VK_OBJECT_TYPE_DEVICE,
+		.objectHandle = (uint64_t) device,
+		.pObjectName = "main device",
+	};
+	vkSetDebugUtilsObjectNameEXT(device, &device_name_info);
+
+	VkDebugUtilsObjectNameInfoEXT gfx_queue_name_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+		.objectType = VK_OBJECT_TYPE_QUEUE,
+		.objectHandle = (uint64_t) gfx_queue,
+		.pObjectName = "main graphics queue",
+	};
+	vkSetDebugUtilsObjectNameEXT(device, &gfx_queue_name_info);
+
 }
 
 auto App::create_allocator() -> void {
@@ -1087,8 +1207,8 @@ auto App::draw(uint32_t frame) -> void
 	}
 
 	uint64_t current_per_frame_data_bytes_offset =
-		(sizeof(FrameData) + physical_device_limits.minUniformBufferOffsetAlignment
-		- (sizeof(FrameData) % physical_device_limits.minUniformBufferOffsetAlignment)) * index;
+		(sizeof(FrameData) + device_properties.properties.limits.minUniformBufferOffsetAlignment
+		 - (sizeof(FrameData) % device_properties.properties.limits.minUniformBufferOffsetAlignment)) * index;
 
 	// Upload per-frame data
 	{
