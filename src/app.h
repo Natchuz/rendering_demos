@@ -8,6 +8,7 @@
 #include<vk_mem_alloc.h>
 
 #include<glm/matrix.hpp>
+#include <format>
 
 // Note that VkPhysicalDeviceVulkan1xProperties properties may have invalid pNext.
 struct Device_Properties
@@ -63,10 +64,6 @@ public:
 	virtual void imgui_new_frame() = 0;
 };
 
-struct FrameData {
-	glm::mat4x4 render_matrix;
-};
-
 struct AllocatedBuffer {
 	VkBuffer buffer;
 	VmaAllocation allocation;
@@ -75,6 +72,30 @@ struct AllocatedBuffer {
 struct AllocatedImage {
 	VkImage image;
 	VmaAllocation allocation;
+};
+
+// Returns size of block that includes alignment
+size_t clamp_size_to_alignment(size_t block_size, size_t alignment);
+
+// Objects "owned by frame" for double or triple buffering
+struct Frame_Data
+{
+	VkCommandPool command_pools[2]; // We need 2 pools since we might be resetting pool already in use
+
+	// Semaphore signaling swapchain presentation event, or more specifically, swapchain image acquire event
+	VkSemaphore present_semaphore;
+	VkSemaphore render_semaphore; // Same as fence below. Presentation event waits on it
+	VkFence render_fence; // Will be signaled once all rendering operations for this frame are done
+	VkSemaphore upload_semaphore; // Signal finishing of upload operation
+	VkFence upload_fence; // Same as above
+
+	AllocatedBuffer staging_buffer; // Staging buffer that will update other buffers with changed data
+	void* staging_buffer_ptr;
+};
+
+struct Frame_Uniform_Data
+{
+	glm::mat4x4 render_matrix;
 };
 
 class App
@@ -109,14 +130,14 @@ private:
 	std::vector<VkImage> swapchain_images;
 	std::vector<VkImageView> swapchain_image_views;
 
-	VkCommandPool command_pool{};
-	std::vector<VkCommandBuffer> command_buffers;
+	uint32_t frames_in_flight;
+	uint32_t frame_id; // Represent frame id in multiple buffering sense - 0, 1 or 2 for triple buffering.
+	std::vector<Frame_Data> frame_data;
 
 	AllocatedBuffer vertex_buffer{};
 	void* vertex_buffer_ptr{};
 
-	AllocatedBuffer frame_data_buffer{};
-	void* frame_data_buffer_ptr{};
+	AllocatedBuffer per_frame_data_buffer{};
 
 	AllocatedImage depth_buffer{};
 	VkImageView depth_buffer_view{};
@@ -124,9 +145,6 @@ private:
 	VkDescriptorSetLayout per_frame_descriptor_set_layout{};
 	VkDescriptorPool descriptor_pool{};
 	VkDescriptorSet per_frame_descriptor_set{};
-
-	VkSemaphore render_semaphore[2]{}, present_semaphore[2]{};
-	VkFence render_fence[2]{};
 	
 	VkShaderModule vertex_shader{};
 	VkShaderModule fragment_shader{};
@@ -139,26 +157,32 @@ private:
 	VkDescriptorPool imgui_descriptor_pool{};
 
 	bool is_running = false;
-	uint32_t frame_index{};
+	uint64_t frame_number{}; // Number of frame from start
 
 	uint32_t vertices_count{};
 
-	auto init_vulkan() -> bool;
+	// Convenience function for naming Vulkan objects with auto formatting via std::format
+	// Usage valid only after device is created.
+	// Only use with Vulkan objects!
+	template <typename Handle, class... Args>
+	auto name_object(VkObjectType object_type, Handle handle, std::format_string<Args...> fmt, Args&&... args) -> void;
+
 	auto create_instance() -> void;
 	auto create_device() -> void;
     auto create_allocator() -> void;
 	auto create_surface() -> void;
 	auto create_swapchain(bool recreate = false) -> void;
-	auto create_command_buffers() -> void;
+
+	auto create_frame_data() -> void;
+
 	auto create_buffers() -> void;
 	auto upload_vertex_data() -> void;
 	auto create_depth_buffer() -> void;
 	auto create_descriptors() -> void;
-	auto create_sync_objects() -> void;
 	auto create_shaders() -> void;
 	auto create_pipeline() -> void;
 
 	auto init_imgui() -> void;
 
-	auto draw(uint32_t frame_index) -> void;
+	auto draw() -> void;
 };
