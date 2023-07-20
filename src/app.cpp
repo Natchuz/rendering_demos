@@ -3,10 +3,12 @@
 #include<algorithm>
 #include<limits>
 #include<fstream>
+#include<numbers>
 
 #include "app.h"
 
 #include <spdlog/spdlog.h>
+#include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/transform.hpp>
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_vulkan.h>
@@ -18,6 +20,106 @@
 #if LIVEPP_ENABLED
 #include <LivePP/API/LPP_API_x64_CPP.h>
 #endif
+
+auto Camera::init() -> void
+{
+	position = {0.f, 0.f, -2.f};
+	front = {0, 0, 1};
+	up = {0, 1, 0};
+	right = {1, 0, 0};
+	yaw = 90;
+	pitch = 0;
+	velocity = 20;
+	speed_multiplier = 5;
+	mouse_sensitivity = 0.05;
+}
+
+auto Camera::update(Input* input, float delta_time) -> void
+{
+	// FIXME: this camera works... but there are many inconsistencies with system handedness
+	// that should be fixed ASAP as I have a feeling that bumping into them will be very common
+
+	ImGui::Begin("Camera");
+	ImGui::Text("Yaw: %f", yaw);
+	ImGui::Text("Pitch: %f", pitch);
+	ImGui::Text("Front: %f %f %f", front.x, front.y, front.z);
+	ImGui::Text("Up: %f %f %f", up.x, up.y, up.z);
+	ImGui::Text("Right: %f %f %f", right.x, right.y, right.z);
+	ImGui::DragFloat3("Position:", glm::value_ptr(position), 0.1, -100, 100);
+	ImGui::DragFloat("Mouse sens:", &mouse_sensitivity, 0.005, 0.001, 1);
+	ImGui::DragFloat("Camera speed:", &velocity, 0.005, 0.001, 50);
+	ImGui::DragFloat("Fast multiplier:", &speed_multiplier, 0.005, 1, 10);
+	ImGui::Text("dx: %f  dy: %f", input->mouse_x_delta, input->mouse_y_delta);
+	if (input->buttons_states[Input::Button::KEYBOARD_BUTTON_LEFT_SHIFT])
+	{
+		ImGui::Text("SHIFT");
+	}
+	ImGui::End();
+
+	// Focus window
+	if (input->buttons_states[Input::Button::MOUSE_BUTTON_RIGHT] == Input::Button_State::PRESSED && !ImGui::GetIO().WantCaptureMouse)
+	{
+		input->inhibit_cursor = true;
+	}
+	else
+	{
+		input->inhibit_cursor = false;
+		return;
+	}
+
+	const glm::vec3 WORLD_UP = {0, 1, 0};
+
+	// Camera rotation
+	yaw += static_cast<float>(input->mouse_x_delta) * mouse_sensitivity;
+	pitch += static_cast<float>(input->mouse_y_delta) * mouse_sensitivity;
+	if (pitch > 89.0)
+	{
+		pitch = 89.0;
+	}
+	if (pitch < -89.0)
+	{
+		pitch = -89.0;
+	}
+	front = glm::normalize(glm::vec3{
+		cos(glm::radians(yaw)) * cos(glm::radians(pitch)),
+		sin(glm::radians(pitch)),
+		sin(glm::radians(yaw)) * cos(glm::radians(pitch)),
+	});
+	right = glm::normalize(glm::cross(WORLD_UP, front));
+	up = glm::normalize(glm::cross(front, right));
+
+	// Movement
+	glm::vec3 delta_position = {};
+	if (input->buttons_states[Input::Button::KEYBOARD_BUTTON_W]) delta_position += front;
+	if (input->buttons_states[Input::Button::KEYBOARD_BUTTON_S]) delta_position -= front;
+	if (input->buttons_states[Input::Button::KEYBOARD_BUTTON_A]) delta_position += right; // Handedness whatever
+	if (input->buttons_states[Input::Button::KEYBOARD_BUTTON_D]) delta_position -= right;
+	if (input->buttons_states[Input::Button::KEYBOARD_BUTTON_E]) delta_position += WORLD_UP;
+	if (input->buttons_states[Input::Button::KEYBOARD_BUTTON_Q]) delta_position -= WORLD_UP;
+
+	if (delta_position != glm::zero<glm::vec3>()) // TODO swap for epsilon compare
+	{
+		position += glm::normalize(delta_position) * (velocity * delta_time *
+			(input->buttons_states[Input::Button::KEYBOARD_BUTTON_LEFT_SHIFT] ? speed_multiplier : 1));
+	}
+}
+
+auto Camera::get_view_matrix() const -> glm::mat4x4
+{
+	return glm::lookAt(position, position + front, up);
+}
+
+auto Timings::update_timings() -> void
+{
+	// When called at start of a frame, frame_time_stamp indicated previous frame
+	//int64_t now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+	//delta_time = static_cast<float>(now - frame_time_stamp) / 1000000000.f;
+	//frame_time_stamp = now;
+	auto now = std::chrono::high_resolution_clock::now();
+	auto time_span = std::chrono::duration_cast<std::chrono::duration<float>>(now - frame_time_stamp);
+	delta_time = time_span.count();
+	frame_time_stamp = now;
+}
 
 size_t clamp_size_to_alignment(size_t block_size, size_t alignment)
 {
@@ -64,6 +166,8 @@ auto App::entry() -> void
 
 	init_imgui();
 
+	camera.init();
+
 	is_running = true;
 	frame_number = 0;
 
@@ -71,16 +175,21 @@ auto App::entry() -> void
 
 	while (!platform->window_requested_to_close())
 	{
+		// Timings
+		timings.update_timings();
+
 		frame_id = frame_number % frames_in_flight;
 
 		platform->poll_events();
+		platform->fill_input(&input);
 
 		ImGui_ImplVulkan_NewFrame();
 		platform->imgui_new_frame();
 		ImGui::NewFrame();
 
-		bool yes = true;
-		ImGui::ShowDemoWindow(&yes);
+		rotation += static_cast<float>(2 * 3.14 / 3 * timings.delta_time);
+
+		camera.update(&input, timings.delta_time);
 
 		draw();
 
@@ -1302,17 +1411,16 @@ auto App::draw() -> void
 	{
 		ZoneScopedN("Build per frame uniform data");
 
-		glm::vec3 cam_pos = { 0.f, 0.f, -2.f };
-		glm::mat4 view = glm::translate(glm::mat4(1.f), cam_pos);
+		glm::mat4 view = camera.get_view_matrix();
 		glm::mat4 projection = glm::perspective(
 			glm::radians(70.f),
 			1280.f / 720.f,
 			0.1f,
 			200.0f);
-		projection[1][1] *= -1;
+		// projection[1][1] *= -1;
 		glm::mat4 model = glm::rotate(
 			glm::mat4{ 1.0f },
-			glm::radians(static_cast<float>(frame_number) * 0.4f),
+			rotation,
 			glm::vec3(0, 1, 0));
 		glm::mat4 render_matrix = projection * view * model;
 
@@ -1481,9 +1589,9 @@ auto App::draw() -> void
 
 		VkViewport viewport = {
 			.x = 0,
-			.y = 0,
+			.y = (float) window_extent.height,
 			.width = (float) window_extent.width,
-			.height = (float) window_extent.height,
+			.height = -1 * (float) window_extent.height,
 			.minDepth = 0.0f,
 			.maxDepth = 1.0f,
 		};
