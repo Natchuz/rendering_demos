@@ -5,8 +5,6 @@
 #include<fstream>
 #include<numbers>
 
-#include "app.h"
-
 #include <spdlog/spdlog.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/transform.hpp>
@@ -17,9 +15,7 @@
 #include<tracy/tracy/Tracy.hpp>
 #include <set>
 
-#if LIVEPP_ENABLED
-#include <LivePP/API/LPP_API_x64_CPP.h>
-#endif
+#include "app.h"
 
 auto Camera::init() -> void
 {
@@ -129,21 +125,100 @@ size_t clamp_size_to_alignment(size_t block_size, size_t alignment)
 	return block_size;
 }
 
+auto Hot_Reload::init() -> void
+{
+#if LIVEPP_ENABLED
+	lpp_agent = lpp::LppCreateSynchronizedAgent(L"sdk/LivePP");
+
+	if (!lpp::LppIsValidSynchronizedAgent(&lpp_agent))
+	{
+		throw std::runtime_error("Live++ error: invalid agent");
+	}
+	lpp_agent.EnableModule(lpp::LppGetCurrentModulePath(), lpp::LPP_MODULES_OPTION_ALL_IMPORT_MODULES,
+						   nullptr, nullptr);
+
+	spdlog::info("Enabled Live++ agent");
+#endif
+}
+
+auto Hot_Reload::close() -> void
+{
+#if LIVEPP_ENABLED
+	lpp::LppDestroySynchronizedAgent(&lpp_agent);
+
+	spdlog::info("Destroyed Live++ agent");
+#endif
+}
+
+auto Hot_Reload::reload_if_needed(App* app) -> void
+{
+#if LIVEPP_ENABLED
+	if (lpp_agent.WantsReload())
+	{
+		auto start_time = std::chrono::high_resolution_clock::now();
+		spdlog::info("-----[ Beginning hot reload (frame {}) ]-----", app->frame_number);
+		spdlog::info("Cleanup...");
+
+		clean_up(app);
+
+		lpp_agent.CompileAndReloadChanges(lpp::LPP_RELOAD_BEHAVIOUR_WAIT_UNTIL_CHANGES_ARE_APPLIED);
+		spdlog::info("Live++ reloaded. Reinitializing...");
+
+		reinitialize(app);
+
+		auto finish_time = std::chrono::high_resolution_clock::now();
+		auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(finish_time - start_time);
+		spdlog::info("-----[ Hot reload done! ({} s) ]-----", duration.count());
+	}
+#endif
+}
+
+auto Hot_Reload::build_hot_reload_window() -> void
+{
+	ImGui::Begin("Hot reloading");
+#if LIVEPP_ENABLED
+
+	ImGui::Text("Live++ version %s", LPP_VERSION);
+	ImGui::SeparatorText("On reload:");
+	ImGui::Checkbox("Rebuild frame data", &rebuild_frame_data);
+
+	ImGui::Separator();
+	if (ImGui::Button("Schedule hot reload"))
+	{
+		lpp_agent.ScheduleReload();
+	}
+#else
+	ImGui::Text("Live++ disabled!");
+#endif
+	ImGui::End();
+}
+
+auto Hot_Reload::clean_up(App* app) -> void
+{
+#if LIVEPP_ENABLED
+	vkDeviceWaitIdle(app->device);
+
+	if (rebuild_frame_data)
+	{
+		app->destroy_frame_data();
+	}
+#endif
+}
+
+auto Hot_Reload::reinitialize(App* app) -> void
+{
+#if LIVEPP_ENABLED
+	if (rebuild_frame_data)
+	{
+		app->create_frame_data();
+	}
+#endif
+}
 
 auto App::entry() -> void
 {
 	spdlog::info("Rendering demos startup");
-
-#if LIVEPP_ENABLED
-	lpp::LppDefaultAgent lppAgent = lpp::LppCreateDefaultAgent(L"sdk/LivePP");
-
-	if (!lpp::LppIsValidDefaultAgent(&lppAgent))
-	{
-		throw std::runtime_error("Live++ error");
-	}
-	lppAgent.EnableModule(lpp::LppGetCurrentModulePath(), lpp::LPP_MODULES_OPTION_ALL_IMPORT_MODULES, nullptr, nullptr);
-
-#endif
+	hot_reload.init();
 
 	platform->window_init(Window_Params{.name = "Rendering demos", .size = {1280, 720}});
 
@@ -175,6 +250,8 @@ auto App::entry() -> void
 
 	while (!platform->window_requested_to_close())
 	{
+		hot_reload.reload_if_needed(this);
+
 		// Timings
 		timings.update_timings();
 
@@ -186,6 +263,8 @@ auto App::entry() -> void
 		ImGui_ImplVulkan_NewFrame();
 		platform->imgui_new_frame();
 		ImGui::NewFrame();
+
+		hot_reload.build_hot_reload_window();
 
 		rotation += static_cast<float>(2 * 3.14 / 3 * timings.delta_time);
 
@@ -199,9 +278,8 @@ auto App::entry() -> void
 	is_running = false;
 
 	platform->window_destroy();
-#if LIVEPP_ENABLED
-	lpp::LppDestroyDefaultAgent(&lppAgent);
-#endif
+
+	hot_reload.close();
 }
 
 template <typename Handle, class... Args>
@@ -885,6 +963,44 @@ auto App::create_frame_data() -> void
 			name_object(VK_OBJECT_TYPE_BUFFER, frame_data[frame_i].staging_buffer.buffer,
 						"Staging buffer (frame {})", frame_id);
 		}
+	}
+}
+
+auto App::destroy_frame_data() -> void
+{
+	// Staging buffer
+	for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
+	{
+		vmaDestroyBuffer(vma_allocator, frame_data[frame_i].staging_buffer.buffer,
+						 frame_data[frame_i].staging_buffer.allocation);
+	}
+
+	// Synchronization primitives
+	for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
+	{
+		vkDestroySemaphore(device, frame_data[frame_i].present_semaphore, nullptr);
+		vkDestroySemaphore(device, frame_data[frame_i].render_semaphore, nullptr);
+		vkDestroyFence(device, frame_data[frame_i].render_fence, nullptr);
+		vkDestroySemaphore(device, frame_data[frame_i].upload_semaphore, nullptr);
+		vkDestroyFence(device, frame_data[frame_i].upload_fence, nullptr);
+	}
+
+	// Command buffers
+	for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
+	{
+		for (auto &frame_oddity_data : frame_data[frame_i].frame_oddity_data)
+		{
+			VkCommandBuffer buffers[] = {
+				frame_oddity_data.upload_command_buffer, frame_oddity_data.draw_command_buffer};
+			vkFreeCommandBuffers(device, frame_oddity_data.command_pool, 2, buffers);
+		}
+	}
+
+	// Command pools
+	for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
+	{
+		vkDestroyCommandPool(device, frame_data[frame_i].frame_oddity_data[0].command_pool, nullptr);
+		vkDestroyCommandPool(device, frame_data[frame_i].frame_oddity_data[1].command_pool, nullptr);
 	}
 }
 

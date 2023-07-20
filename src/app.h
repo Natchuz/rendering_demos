@@ -13,6 +13,10 @@
 #include<glm/matrix.hpp>
 #include <format>
 
+#if LIVEPP_ENABLED
+#include <LivePP/API/LPP_API_x64_CPP.h>
+#endif
+
 // Note that VkPhysicalDeviceVulkan1xProperties properties may have invalid pNext.
 struct Device_Properties
 {
@@ -191,6 +195,28 @@ struct AllocatedImage {
 // Returns size of block that includes alignment
 size_t clamp_size_to_alignment(size_t block_size, size_t alignment);
 
+class App;
+
+class Hot_Reload
+{
+#if LIVEPP_ENABLED
+	lpp::LppSynchronizedAgent lpp_agent;
+	// Reload settings and window
+	bool rebuild_frame_data = true;
+#endif
+public:
+	auto init() -> void;
+	auto close() -> void;
+	auto reload_if_needed(App* app) -> void;
+
+	auto build_hot_reload_window() -> void;
+
+private:
+	auto clean_up(App* app) -> void;
+	auto reinitialize(App* app) -> void;
+};
+
+
 // Objects "owned by frame" for double or triple buffering
 struct Frame_Data
 {
@@ -220,6 +246,8 @@ struct Frame_Uniform_Data
 
 class App
 {
+	friend Hot_Reload;
+
 public:
 	explicit App(Platform* platform) { // NOLINT(cppcoreguidelines-pro-type-member-init)
 		this->platform = platform;
@@ -229,6 +257,7 @@ public:
 
 private:
 	Platform* platform;
+	Hot_Reload hot_reload;
 	Input input{}; // Especially important to zero out mouse_x and mouse_y at init
 
 	Timings timings;
@@ -302,6 +331,7 @@ private:
 	auto create_swapchain(bool recreate = false) -> void;
 
 	auto create_frame_data() -> void;
+	auto destroy_frame_data() -> void;
 
 	auto create_buffers() -> void;
 	auto upload_vertex_data() -> void;
