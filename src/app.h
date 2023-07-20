@@ -194,7 +194,13 @@ size_t clamp_size_to_alignment(size_t block_size, size_t alignment);
 // Objects "owned by frame" for double or triple buffering
 struct Frame_Data
 {
-	VkCommandPool command_pools[2]; // We need 2 pools since we might be resetting pool already in use
+	struct Frame_Oddity_Data
+	{
+		VkCommandPool command_pool;
+		VkCommandBuffer upload_command_buffer;
+		VkCommandBuffer draw_command_buffer;
+	};
+	Frame_Oddity_Data frame_oddity_data[2];
 
 	// Semaphore signaling swapchain presentation event, or more specifically, swapchain image acquire event
 	VkSemaphore present_semaphore;

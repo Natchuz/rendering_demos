@@ -769,78 +769,122 @@ auto App::create_frame_data() -> void
 	frame_data.reserve(3); // Triple buffering should be enough
 
 	// Command pools
-	VkCommandPoolCreateInfo command_pool_create_info = {
-		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, // We'll reset every pool each frame and allocate new buffers
-		.queueFamilyIndex = gfx_queue_family_index,
-	};
-
-	for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
 	{
-		vkCreateCommandPool(device, &command_pool_create_info, nullptr, &frame_data[frame_i].command_pools[0]);
-		vkCreateCommandPool(device, &command_pool_create_info, nullptr, &frame_data[frame_i].command_pools[1]);
+		ZoneScopedN("Command pools creation");
 
-		name_object(VK_OBJECT_TYPE_COMMAND_POOL, frame_data[frame_i].command_pools[0],
-					"Main command pool (frame {}, oddity 0)", frame_i);
-		name_object(VK_OBJECT_TYPE_COMMAND_POOL, frame_data[frame_i].command_pools[1],
-					"Main command pool (frame {}, oddity 1)", frame_i);
+		VkCommandPoolCreateInfo command_pool_create_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, // We'll reset every pool each frame and allocate new buffers
+			.queueFamilyIndex = gfx_queue_family_index,
+		};
+
+		for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
+		{
+			vkCreateCommandPool(device, &command_pool_create_info, nullptr,
+								&frame_data[frame_i].frame_oddity_data[0].command_pool);
+			vkCreateCommandPool(device, &command_pool_create_info, nullptr,
+								&frame_data[frame_i].frame_oddity_data[1].command_pool);
+
+			name_object(VK_OBJECT_TYPE_COMMAND_POOL,
+						frame_data[frame_i].frame_oddity_data[0].command_pool,
+						"Main command pool (frame {}, oddity 0)", frame_i);
+			name_object(VK_OBJECT_TYPE_COMMAND_POOL,
+						frame_data[frame_i].frame_oddity_data[1].command_pool,
+						"Main command pool (frame {}, oddity 1)", frame_i);
+		}
+	}
+
+	// Command buffers
+	{
+		ZoneScopedN("Command buffers allocation");
+
+		for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
+		{
+			for (int frame_oddity=0; frame_oddity < 2; frame_oddity++)
+			{
+				auto frame_oddity_data = &frame_data[frame_i].frame_oddity_data[frame_oddity];
+
+				VkCommandBufferAllocateInfo allocate_info = {
+					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+					.commandPool = frame_oddity_data->command_pool,
+					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+					.commandBufferCount = 1,
+				};
+
+				vkAllocateCommandBuffers(device, &allocate_info, &frame_oddity_data->upload_command_buffer);
+				vkAllocateCommandBuffers(device, &allocate_info, &frame_oddity_data->draw_command_buffer);
+
+				name_object(VK_OBJECT_TYPE_COMMAND_BUFFER, frame_oddity_data->upload_command_buffer,
+							"Upload command buffer (frame {}, oddity {})", frame_id, frame_oddity);
+				name_object(VK_OBJECT_TYPE_COMMAND_BUFFER, frame_oddity_data->draw_command_buffer,
+							"Draw command buffer (frame {}, oddity {})", frame_id, frame_oddity);
+			}
+		}
 	}
 
 	// Synchronization primitives
-	VkSemaphoreCreateInfo semaphore_create_info = {
-		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-	};
-
-	VkFenceCreateInfo fence_create_info = {
-		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-		.flags = VK_FENCE_CREATE_SIGNALED_BIT,
-	};
-
-	for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
 	{
-		vkCreateSemaphore(device, &semaphore_create_info, nullptr, &frame_data[frame_i].present_semaphore);
-		vkCreateSemaphore(device, &semaphore_create_info, nullptr, &frame_data[frame_i].render_semaphore);
-		vkCreateFence(device, &fence_create_info, nullptr, &frame_data[frame_i].render_fence);
-		vkCreateSemaphore(device, &semaphore_create_info, nullptr, &frame_data[frame_i].upload_semaphore);
-		vkCreateFence(device, &fence_create_info, nullptr, &frame_data[frame_i].upload_fence);
+		ZoneScopedN("Synchronization primitives creation");
 
-		name_object(VK_OBJECT_TYPE_SEMAPHORE, frame_data[frame_i].present_semaphore,
-					"Present semaphore (frame {})", frame_i);
-		name_object(VK_OBJECT_TYPE_SEMAPHORE, frame_data[frame_i].render_semaphore,
-					"Render semaphore (frame {})", frame_i);
-		name_object(VK_OBJECT_TYPE_FENCE, frame_data[frame_i].render_fence,
-					"Render fence (frame {})", frame_i);
-		name_object(VK_OBJECT_TYPE_SEMAPHORE, frame_data[frame_i].upload_semaphore,
-					"Upload semaphore (frame {})", frame_id);
-		name_object(VK_OBJECT_TYPE_FENCE, frame_data[frame_i].upload_fence,
-					"Upload fence (frame {})", frame_id);
+		VkSemaphoreCreateInfo semaphore_create_info = {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+		};
 
+		VkFenceCreateInfo fence_create_info = {
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
+		};
+
+		for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
+		{
+			vkCreateSemaphore(device, &semaphore_create_info, nullptr, &frame_data[frame_i].present_semaphore);
+			vkCreateSemaphore(device, &semaphore_create_info, nullptr, &frame_data[frame_i].render_semaphore);
+			vkCreateFence(device, &fence_create_info, nullptr, &frame_data[frame_i].render_fence);
+			vkCreateSemaphore(device, &semaphore_create_info, nullptr, &frame_data[frame_i].upload_semaphore);
+			vkCreateFence(device, &fence_create_info, nullptr, &frame_data[frame_i].upload_fence);
+
+			name_object(VK_OBJECT_TYPE_SEMAPHORE, frame_data[frame_i].present_semaphore,
+						"Present semaphore (frame {})", frame_i);
+			name_object(VK_OBJECT_TYPE_SEMAPHORE, frame_data[frame_i].render_semaphore,
+						"Render semaphore (frame {})", frame_i);
+			name_object(VK_OBJECT_TYPE_FENCE, frame_data[frame_i].render_fence,
+						"Render fence (frame {})", frame_i);
+			name_object(VK_OBJECT_TYPE_SEMAPHORE, frame_data[frame_i].upload_semaphore,
+						"Upload semaphore (frame {})", frame_id);
+			name_object(VK_OBJECT_TYPE_FENCE, frame_data[frame_i].upload_fence,
+						"Upload fence (frame {})", frame_id);
+
+		}
 	}
 
 	// Staging buffer
-	VkBufferCreateInfo staging_buffer_create_info = {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.size = 10000000, // 10 mb
-		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-	};
-
-	VmaAllocationCreateInfo staging_buffer_vma_create_info = {
-		.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-	};
-
-	for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
 	{
-		VmaAllocationInfo allocation_info;
-		vmaCreateBuffer(vma_allocator,
-						&staging_buffer_create_info,
-						&staging_buffer_vma_create_info,
-						&frame_data[frame_i].staging_buffer.buffer,
-						&frame_data[frame_i].staging_buffer.allocation,
-						&allocation_info);
-		frame_data[frame_i].staging_buffer_ptr = allocation_info.pMappedData;
-		name_object(VK_OBJECT_TYPE_BUFFER, frame_data[frame_i].staging_buffer.buffer,
-					"Staging buffer (frame {})", frame_id);
+		ZoneScopedN("Staging buffer allocation");
+
+		VkBufferCreateInfo staging_buffer_create_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size = 10000000, // 10 mb
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		};
+
+		VmaAllocationCreateInfo staging_buffer_vma_create_info = {
+			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+		};
+
+		for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
+		{
+			VmaAllocationInfo allocation_info;
+			vmaCreateBuffer(vma_allocator,
+							&staging_buffer_create_info,
+							&staging_buffer_vma_create_info,
+							&frame_data[frame_i].staging_buffer.buffer,
+							&frame_data[frame_i].staging_buffer.allocation,
+							&allocation_info);
+			frame_data[frame_i].staging_buffer_ptr = allocation_info.pMappedData;
+			name_object(VK_OBJECT_TYPE_BUFFER, frame_data[frame_i].staging_buffer.buffer,
+						"Staging buffer (frame {})", frame_id);
+		}
 	}
 }
 
@@ -1359,28 +1403,15 @@ auto App::draw() -> void
 
 	auto current_frame = &frame_data[frame_id];
 	auto frame_oddity = static_cast<uint32_t>(frame_number / frames_in_flight) % 2;
+	auto frame_oddity_data = &current_frame->frame_oddity_data[frame_oddity];
 
 	// Reset pool and allocate command buffers
 	VkCommandBuffer upload_command_buffer, draw_command_buffer;
 	{
-		ZoneScopedN("Reset pool and allocate command buffers");
-
-		vkResetCommandPool(device, current_frame->command_pools[frame_oddity], 0);
-
-		VkCommandBufferAllocateInfo allocate_info = {
-			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-			.commandPool = current_frame->command_pools[frame_oddity],
-			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-			.commandBufferCount = 1,
-		};
-
-		vkAllocateCommandBuffers(device, &allocate_info, &upload_command_buffer);
-		vkAllocateCommandBuffers(device, &allocate_info, &draw_command_buffer);
-
-		name_object(VK_OBJECT_TYPE_COMMAND_BUFFER, upload_command_buffer,
-					"Upload command buffer (frame {}, oddity {})", frame_id, frame_oddity);
-		name_object(VK_OBJECT_TYPE_COMMAND_BUFFER, draw_command_buffer,
-					"Draw command buffer (frame {}, oddity {})", frame_id, frame_oddity);
+		ZoneScopedN("Reset command pool");
+		vkResetCommandPool(device, frame_oddity_data->command_pool, 0);
+		upload_command_buffer = frame_oddity_data->upload_command_buffer;
+		draw_command_buffer = frame_oddity_data->draw_command_buffer;
 	}
 
 	// Await for previously buffered frame
