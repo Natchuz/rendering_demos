@@ -125,6 +125,60 @@ size_t clamp_size_to_alignment(size_t block_size, size_t alignment)
 	return block_size;
 }
 
+template <class... Args>
+auto command_buffer_region_begin(VkCommandBuffer buffer, std::format_string<Args...> fmt, Args&&... args) -> void
+{
+	const auto formatted = std::vformat(fmt.get(), std::make_format_args(args...));
+	VkDebugUtilsLabelEXT label_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+		.pLabelName = formatted.c_str(),
+	};
+	vkCmdBeginDebugUtilsLabelEXT(buffer, &label_info);
+}
+
+auto command_buffer_region_end(VkCommandBuffer buffer) -> void
+{
+	vkCmdEndDebugUtilsLabelEXT(buffer);
+}
+
+template <class... Args>
+auto command_buffer_insert_marker(VkCommandBuffer buffer, std::format_string<Args...> fmt, Args&&... args) -> void
+{
+	const auto formatted = std::vformat(fmt.get(), std::make_format_args(args...));
+	VkDebugUtilsLabelEXT label_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+		.pLabelName = formatted.c_str(),
+	};
+	vkCmdInsertDebugUtilsLabelEXT(buffer, &label_info);
+}
+
+template <class... Args>
+auto queue_region_begin(VkQueue queue, std::format_string<Args...> fmt, Args&&... args) -> void
+{
+	const auto formatted = std::vformat(fmt.get(), std::make_format_args(args...));
+	VkDebugUtilsLabelEXT label_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+		.pLabelName = formatted.c_str(),
+	};
+	vkQueueBeginDebugUtilsLabelEXT(queue, &label_info);
+}
+
+auto queue_region_end(VkQueue queue) -> void
+{
+	vkQueueEndDebugUtilsLabelEXT(queue);
+}
+
+template <class... Args>
+auto queue_insert_marker(VkQueue queue, std::format_string<Args...> fmt, Args&&... args) -> void
+{
+	const auto formatted = std::vformat(fmt.get(), std::make_format_args(args...));
+	VkDebugUtilsLabelEXT label_info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+		.pLabelName = formatted.c_str(),
+	};
+	vkQueueInsertDebugUtilsLabelEXT(queue, &label_info);
+}
+
 auto Hot_Reload::init() -> void
 {
 #if LIVEPP_ENABLED
@@ -338,7 +392,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_utils_messenger_callback(VkDebugUtil
 	return false;
 }
 
-const std::set<std::string> INSTANCE_REQUIRED_EXTENSIONS = {
+const std::vector<std::string> INSTANCE_REQUIRED_EXTENSIONS = {
 	VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
 };
 
@@ -355,11 +409,12 @@ auto App::create_instance() -> void
 		throw std::runtime_error("Unsupported vulkan version");
 	}
 
-	std::set<std::string> required_extensions = INSTANCE_REQUIRED_EXTENSIONS;
+	std::vector<std::string> required_extensions = INSTANCE_REQUIRED_EXTENSIONS;
 
 	// Platform extensions are required
 	const auto required_platform_extensions = platform->get_required_extensions();
-	required_extensions.insert(required_platform_extensions.begin(), required_platform_extensions.end());
+	required_extensions.insert(required_extensions.end(), required_platform_extensions.begin(),
+							   required_platform_extensions.end());
 
 	// Query available extensions
 	uint32_t available_extension_count;
@@ -368,14 +423,19 @@ auto App::create_instance() -> void
 	vkEnumerateInstanceExtensionProperties(nullptr, &available_extension_count,
 										   available_extensions.data());
 
-	// Build list of enabled extensions
+	// Build list of enabled extensions.
+	// Note that applications like RenderDoc may report VK_EXT_debug_utils twice, thus we need to take care
+	// of duplicate extensions
 	std::vector<char*> enabled_extensions = {};
-	for (auto &available_extension : available_extensions)
+	for (auto &required_extension : required_extensions)
 	{
-		// Ouch, a lot of allocations
-		if (required_extensions.contains(std::string(available_extension.extensionName)))
+		auto predictor = [required_extension](VkExtensionProperties p) -> bool {
+			return p.extensionName == required_extension;
+		};
+		auto it = std::find_if(available_extensions.begin(), available_extensions.end(), predictor);
+		if (it != available_extensions.end())
 		{
-			enabled_extensions.push_back(available_extension.extensionName);
+			enabled_extensions.push_back((*it).extensionName);
 		}
 	}
 
@@ -893,9 +953,9 @@ auto App::create_frame_data() -> void
 				vkAllocateCommandBuffers(device, &allocate_info, &frame_oddity_data->draw_command_buffer);
 
 				name_object(VK_OBJECT_TYPE_COMMAND_BUFFER, frame_oddity_data->upload_command_buffer,
-							"Upload command buffer (frame {}, oddity {})", frame_id, frame_oddity);
+							"Upload command buffer (frame {}, oddity {})", frame_i, frame_oddity);
 				name_object(VK_OBJECT_TYPE_COMMAND_BUFFER, frame_oddity_data->draw_command_buffer,
-							"Draw command buffer (frame {}, oddity {})", frame_id, frame_oddity);
+							"Draw command buffer (frame {}, oddity {})", frame_i, frame_oddity);
 			}
 		}
 	}
@@ -928,9 +988,9 @@ auto App::create_frame_data() -> void
 			name_object(VK_OBJECT_TYPE_FENCE, frame_data[frame_i].render_fence,
 						"Render fence (frame {})", frame_i);
 			name_object(VK_OBJECT_TYPE_SEMAPHORE, frame_data[frame_i].upload_semaphore,
-						"Upload semaphore (frame {})", frame_id);
+						"Upload semaphore (frame {})", frame_i);
 			name_object(VK_OBJECT_TYPE_FENCE, frame_data[frame_i].upload_fence,
-						"Upload fence (frame {})", frame_id);
+						"Upload fence (frame {})", frame_i);
 
 		}
 	}
@@ -961,7 +1021,7 @@ auto App::create_frame_data() -> void
 							&allocation_info);
 			frame_data[frame_i].staging_buffer_ptr = allocation_info.pMappedData;
 			name_object(VK_OBJECT_TYPE_BUFFER, frame_data[frame_i].staging_buffer.buffer,
-						"Staging buffer (frame {})", frame_id);
+						"Staging buffer (frame {})", frame_i);
 		}
 	}
 }
@@ -1026,6 +1086,8 @@ auto App::create_buffers() -> void {
 						&vertex_buffer.allocation,
 						nullptr);
 		vmaMapMemory(vma_allocator, vertex_buffer.allocation, &vertex_buffer_ptr);
+
+		name_object(VK_OBJECT_TYPE_BUFFER, vertex_buffer.buffer, "Main vertex buffer");
 	}
 
 	// Uniform buffer
@@ -1033,7 +1095,7 @@ auto App::create_buffers() -> void {
 		auto size = clamp_size_to_alignment(
 			sizeof(Frame_Uniform_Data),
 			device_properties.properties.limits.minUniformBufferOffsetAlignment);
-		size *= frames_in_flight;
+		size *= frames_in_flight * 2; // frames in flight times frame oddity
 
 		VkBufferCreateInfo buffer_create_info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -1051,6 +1113,8 @@ auto App::create_buffers() -> void {
 						&per_frame_data_buffer.buffer,
 						&per_frame_data_buffer.allocation,
 						nullptr);
+
+		name_object(VK_OBJECT_TYPE_BUFFER, per_frame_data_buffer.buffer, "Frame data uniform buffer");
 	}
 }
 
@@ -1207,7 +1271,7 @@ auto App::create_descriptors() -> void {
 		VkDescriptorBufferInfo descriptor_buffer_info = {
 			.buffer = per_frame_data_buffer.buffer,
 			.offset = 0,
-			.range = 4,
+			.range = sizeof(Frame_Uniform_Data),
 		};
 
 		VkWriteDescriptorSet descriptor_set_write = {
@@ -1538,6 +1602,9 @@ auto App::draw() -> void
 		vkResetFences(device, 1, &current_frame->upload_fence);
 	}
 
+	queue_insert_marker(gfx_queue, "Note: Frame: {} (id: {}, oddity: {})",
+						frame_number, frame_id, frame_oddity);
+
 	char* staging_buffer_ptr = static_cast<char*>(current_frame->staging_buffer_ptr);
 	size_t linear_allocator = 0;
 
@@ -1545,7 +1612,7 @@ auto App::draw() -> void
 	size_t current_per_frame_data_buffer_offset = clamp_size_to_alignment(
 		sizeof(Frame_Uniform_Data),
 		device_properties.properties.limits.minUniformBufferOffsetAlignment)
-												  * frame_id;
+												  * frame_id * frame_oddity;
 
 	// Begin recording
 	VkCommandBufferBeginInfo upload_begin_info = {
@@ -1553,6 +1620,7 @@ auto App::draw() -> void
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 	};
 	vkBeginCommandBuffer(upload_command_buffer, &upload_begin_info);
+	command_buffer_region_begin(upload_command_buffer, "Upload stage");
 
 	// Build and stage per-frame data
 	{
@@ -1587,6 +1655,7 @@ auto App::draw() -> void
 		linear_allocator += sizeof(Frame_Uniform_Data);
 	}
 
+	command_buffer_region_end(upload_command_buffer);
 	vkEndCommandBuffer(upload_command_buffer);
 
 	{
@@ -1693,6 +1762,7 @@ auto App::draw() -> void
 			1, &render_transition_barrier);
 	}
 
+	command_buffer_region_begin(draw_command_buffer, "Main draw pass");
 	{
 		ZoneScopedN("Main draw pass");
 
@@ -1765,6 +1835,7 @@ auto App::draw() -> void
 		}
 
 		vkCmdBeginRendering(draw_command_buffer, &rendering_info);
+		command_buffer_region_begin(draw_command_buffer, "Rendering");
 		{
 			ZoneScopedN("Drawing");
 
@@ -1772,9 +1843,12 @@ auto App::draw() -> void
 			vkCmdBindVertexBuffers(draw_command_buffer, 0, 1, &vertex_buffer.buffer, &offsets);
 			vkCmdDraw(draw_command_buffer, vertices_count, 1, 0, 0);
 		}
+		command_buffer_region_end(draw_command_buffer);
 		vkCmdEndRendering(draw_command_buffer);
 	}
+	command_buffer_region_end(draw_command_buffer);
 
+	command_buffer_region_begin(draw_command_buffer, "ImGui draw pass");
 	{
 		ZoneScopedN("ImGui draw pass");
 
@@ -1807,6 +1881,7 @@ auto App::draw() -> void
 		}
 		vkCmdEndRendering(draw_command_buffer);
 	}
+	command_buffer_region_end(draw_command_buffer);
 
 	{
 		ZoneScopedN("Transition to present layout");

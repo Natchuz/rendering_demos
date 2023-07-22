@@ -195,6 +195,18 @@ struct AllocatedImage {
 // Returns size of block that includes alignment
 size_t clamp_size_to_alignment(size_t block_size, size_t alignment);
 
+// VK_EXT_debug_utils helpers
+template <class... Args>
+auto command_buffer_region_begin(VkCommandBuffer buffer, std::format_string<Args...> fmt, Args&&... args) -> void;
+auto command_buffer_region_end(VkCommandBuffer buffer) -> void;
+template <class... Args>
+auto command_buffer_insert_marker(VkCommandBuffer buffer, std::format_string<Args...> fmt, Args&&... args) -> void;
+template <class... Args>
+auto queue_region_begin(VkQueue queue, std::format_string<Args...> fmt, Args&&... args) -> void;
+auto queue_region_end(VkQueue queue) -> void;
+template <class... Args>
+auto queue_insert_marker(VkQueue queue, std::format_string<Args...> fmt, Args&&... args) -> void;
+
 class App;
 
 class Hot_Reload
