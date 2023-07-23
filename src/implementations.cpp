@@ -15,3 +15,6 @@
 
 #define SPDLOG_HEADER_ONLY
 #include<spdlog/spdlog.h>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>

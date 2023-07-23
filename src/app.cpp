@@ -15,6 +15,8 @@
 #include<tracy/tracy/Tracy.hpp>
 #include <set>
 
+#include <stb_image.h>
+
 #include "app.h"
 
 auto Camera::init() -> void
@@ -287,13 +289,14 @@ auto App::entry() -> void
 	create_frame_data();
 
 	create_buffers();
-	upload_vertex_data();
 	create_depth_buffer();
-	create_descriptors();
 	create_shaders();
-	create_pipeline();
 
 	init_imgui();
+
+	load_scene_data();
+	create_descriptors();
+	create_pipeline();
 
 	camera.init();
 
@@ -577,7 +580,8 @@ auto App::create_device() -> void
 		// Check if required features are supported
 		auto dynamic_rendering = candidate.device_features13.dynamicRendering;
 		auto synchronization2 = candidate.device_features13.synchronization2;
-		if (!dynamic_rendering || !synchronization2)
+		auto anisotropy = candidate.device_features.samplerAnisotropy;
+		if (!dynamic_rendering || !synchronization2 || !anisotropy)
 		{
 			continue;
 		}
@@ -704,6 +708,10 @@ auto App::create_device() -> void
 		.dynamicRendering = true,
 	};
 
+	VkPhysicalDeviceFeatures device_core_features = {
+		.samplerAnisotropy = true,
+	};
+
 	std::vector<char*> enabled_extensions(selected_candidate.interested_extensions.size());
 	std::transform(selected_candidate.interested_extensions.begin(), selected_candidate.interested_extensions.end(),
 				   enabled_extensions.begin(), [](auto &it) { return it.extensionName; });
@@ -715,6 +723,7 @@ auto App::create_device() -> void
 		.pQueueCreateInfos = &queue_create_info,
 		.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size()),
 		.ppEnabledExtensionNames = enabled_extensions.data(),
+		.pEnabledFeatures = &device_core_features,
 	};
 
 	auto vk_err = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
@@ -1001,7 +1010,7 @@ auto App::create_frame_data() -> void
 
 		VkBufferCreateInfo staging_buffer_create_info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = 10000000, // 10 mb
+			.size = 30000000, // 30 mb
 			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 		};
 
@@ -1070,7 +1079,7 @@ auto App::create_buffers() -> void {
 	{
 		VkBufferCreateInfo vertex_buffer_create_info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = 70000,
+			.size = 100000,
 			.usage = VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 		};
 
@@ -1118,12 +1127,12 @@ auto App::create_buffers() -> void {
 	}
 }
 
-auto App::upload_vertex_data() -> void {
+auto App::load_scene_data() -> void {
 	tinyobj::attrib_t attrib;
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> materials;
 	std::string warn, err;
-	auto filename = "assets/suzanne/suzanne.obj";
+	auto filename = "assets/colored_suzanne/suzanne.obj";
 
 	tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, filename);
 
@@ -1156,8 +1165,10 @@ auto App::upload_vertex_data() -> void {
 				tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
 				tinyobj::real_t ny = attrib.normals[3 * idx.normal_index + 1];
 				tinyobj::real_t nz = attrib.normals[3 * idx.normal_index + 2];
+				tinyobj::real_t u  = attrib.texcoords[2 * idx.texcoord_index + 0];
+				tinyobj::real_t v  = attrib.texcoords[2 * idx.texcoord_index + 1];
 
-				vertex_data.insert(vertex_data.end(), {vx, vy, vz, nx, ny, nz});
+				vertex_data.insert(vertex_data.end(), {vx, vy, vz, nx, ny, nz, u, 1-v}); // Vulkan UV fix
 				vertices_count += 1;
 			}
 
@@ -1165,10 +1176,92 @@ auto App::upload_vertex_data() -> void {
 		}
 	}
 
+	spdlog::info("Loaded object, with {} vertices ({} bytes)", vertices_count, vertex_data.size() * sizeof(float));
 	memcpy(vertex_buffer_ptr, vertex_data.data(), vertex_data.size() * sizeof(float));
 	vmaFlushAllocation(vma_allocator, vertex_buffer.allocation, 0, vertex_data.size() * sizeof(float));
-}
 
+	// Texture
+
+	auto texture = load_file("assets/colored_suzanne/ColorTexture.png");
+	int32_t width, height, channels;
+	auto pixels = stbi_load_from_memory(texture.data(), texture.size(), &width, &height, &channels, STBI_rgb_alpha);
+
+	VkImageCreateInfo image_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_R8G8B8A8_SRGB,
+		.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+
+	VmaAllocationCreateInfo allocation_create_info = {
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+	};
+
+	AllocatedImage image = {};
+	VmaAllocationInfo allocation_info;
+	vmaCreateImage(vma_allocator, &image_create_info, &allocation_create_info,
+				   &image.image, &image.allocation, &allocation_info);
+	name_object(VK_OBJECT_TYPE_IMAGE, image.image, "Color texture");
+
+	VkImageViewCreateInfo image_view_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = image.image,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = VK_FORMAT_R8G8B8A8_SRGB,
+		.components = {
+			.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+		},
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+	};
+	VkImageView image_view;
+	vkCreateImageView(device, &image_view_create_info, nullptr, &image_view);
+
+	VkSamplerCreateInfo sampler_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter = VK_FILTER_LINEAR,
+		.minFilter = VK_FILTER_LINEAR,
+		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.mipLodBias = 0,
+		.anisotropyEnable = false,
+		.maxAnisotropy = 16,
+		.compareEnable = false,
+		.compareOp = VK_COMPARE_OP_NEVER,
+		.borderColor = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
+		.unnormalizedCoordinates = false,
+	};
+	VkSampler sampler;
+	vkCreateSampler(device, &sampler_create_info, nullptr, &sampler);
+
+	image_manager.sampled_images.push_back({
+		.image = image,
+		.view = image_view,
+		.sampler = sampler,
+	});
+	image_manager.upload_queue.push_back({
+		.pixels = pixels,
+		.image_size = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) },
+		.image_handle = static_cast<Image_Manager::Image_Handle>(image_manager.sampled_images.size() - 1),
+	});
+}
 
 auto App::create_depth_buffer() -> void {
 	VkImageCreateInfo image_create_info = {
@@ -1220,19 +1313,25 @@ auto App::create_depth_buffer() -> void {
 auto App::create_descriptors() -> void {
 
 	{
-		VkDescriptorSetLayoutBinding set_layout_bindings[1] = {
+		VkDescriptorSetLayoutBinding set_layout_bindings[] = {
 			{
 				.binding = 0,
 				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
 				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-			}
+				.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
+			},
+			{
+				.binding = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 10,
+				.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
+			},
 		};
 
 		VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.flags = 0,
-			.bindingCount = 1,
+			.bindingCount = 2,
 			.pBindings = set_layout_bindings,
 		};
 
@@ -1240,10 +1339,14 @@ auto App::create_descriptors() -> void {
 	}
 
 	{
-		VkDescriptorPoolSize pool_sizes[1] = {
+		VkDescriptorPoolSize pool_sizes[] = {
 			{
 				.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
 				.descriptorCount = 10,
+			},
+			{
+				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.descriptorCount = 100,
 			},
 		};
 
@@ -1251,7 +1354,7 @@ auto App::create_descriptors() -> void {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 			.flags = 0,
 			.maxSets = 10,
-			.poolSizeCount = 1,
+			.poolSizeCount = 2,
 			.pPoolSizes = pool_sizes,
 		};
 
@@ -1274,21 +1377,38 @@ auto App::create_descriptors() -> void {
 			.range = sizeof(Frame_Uniform_Data),
 		};
 
-		VkWriteDescriptorSet descriptor_set_write = {
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = per_frame_descriptor_set,
-			.dstBinding = 0,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-			.pBufferInfo = &descriptor_buffer_info,
+		VkDescriptorImageInfo image_info = {
+			.sampler = image_manager.sampled_images[0].sampler,
+			.imageView = image_manager.sampled_images[0].view,
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		};
 
-		vkUpdateDescriptorSets(device, 1, &descriptor_set_write, 0, nullptr);
+		VkWriteDescriptorSet descriptor_set_writes[] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = per_frame_descriptor_set,
+				.dstBinding = 0,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+				.pBufferInfo = &descriptor_buffer_info,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = per_frame_descriptor_set,
+				.dstBinding = 1,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &image_info,
+			}
+		};
+
+		vkUpdateDescriptorSets(device, 2, descriptor_set_writes, 0, nullptr);
 	}
 }
 
-auto load_file(const char* file_path) -> std::vector<uint32_t>
+auto load_file(const char* file_path) -> std::vector<uint8_t>
 {
 	std::ifstream file(file_path, std::ios::ate | std::ios::binary);
 
@@ -1298,7 +1418,7 @@ auto load_file(const char* file_path) -> std::vector<uint32_t>
 	}
 
 	size_t file_size = (size_t) file.tellg();
-	std::vector<uint32_t> buffer(file_size / sizeof(uint32_t));
+	std::vector<uint8_t> buffer(file_size);
 
 	file.seekg(0);
 	file.read((char*) buffer.data(), file_size);
@@ -1309,19 +1429,20 @@ auto load_file(const char* file_path) -> std::vector<uint32_t>
 
 auto App::create_shaders() -> void
 {
+	// If Spir-V shader is valid, casting bytes to 32-bit words shouldn't matter
 	auto vert_shader_code = load_file("data/shaders/triangle_vert.spv");
 	VkShaderModuleCreateInfo vert_shader_create_info = {
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.codeSize = vert_shader_code.size() * sizeof(uint32_t),
-		.pCode = vert_shader_code.data(),
+		.codeSize = vert_shader_code.size(),
+		.pCode = reinterpret_cast<const uint32_t *>(vert_shader_code.data()),
 	};
 	vkCreateShaderModule(device, &vert_shader_create_info, nullptr, &vertex_shader);
 
 	auto frag_shader_code = load_file("data/shaders/triangle_frag.spv");
 	VkShaderModuleCreateInfo frag_shader_create_info = {
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.codeSize = frag_shader_code.size() * sizeof(uint32_t),
-		.pCode = frag_shader_code.data(),
+		.codeSize = frag_shader_code.size(),
+		.pCode = reinterpret_cast<const uint32_t *>(frag_shader_code.data()),
 	};
 	vkCreateShaderModule(device, &frag_shader_create_info, nullptr, &fragment_shader);
 }
@@ -1359,32 +1480,39 @@ auto App::create_pipeline() -> void
 
 	VkVertexInputBindingDescription binding_description = {
 		.binding = 0,
-		.stride = 6 * sizeof(float),
+		.stride = 8 * sizeof(float),
 		.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
 	};
 
-	VkVertexInputAttributeDescription position_attribute_description = {
+	VkVertexInputAttributeDescription vertex_attributes[3];
+
+	vertex_attributes[0] = { // Position attribute
 		.location = 0,
 		.binding = 0,
 		.format = VK_FORMAT_R32G32B32_SFLOAT,
 		.offset = 0,
 	};
 
-	VkVertexInputAttributeDescription color_attribute_description = {
+	vertex_attributes[1] = { // Normal attribute
 		.location = 1,
 		.binding = 0,
 		.format = VK_FORMAT_R32G32B32_SFLOAT,
-		.offset = sizeof(float) * 3,
+		.offset = 3 * sizeof(float),
 	};
 
-	VkVertexInputAttributeDescription attributes[2] = {position_attribute_description, color_attribute_description};
+	vertex_attributes[2] = { // UV attribute
+		.location = 2,
+		.binding = 0,
+		.format = VK_FORMAT_R32G32_SFLOAT,
+		.offset = 6 * sizeof(float),
+	};
 
 	VkPipelineVertexInputStateCreateInfo vertex_input_state = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		.vertexBindingDescriptionCount = 1,
 		.pVertexBindingDescriptions = &binding_description,
-		.vertexAttributeDescriptionCount = 2,
-		.pVertexAttributeDescriptions = attributes,
+		.vertexAttributeDescriptionCount = 3,
+		.pVertexAttributeDescriptions = vertex_attributes,
 	};
 
 	VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
@@ -1622,6 +1750,78 @@ auto App::draw() -> void
 	vkBeginCommandBuffer(upload_command_buffer, &upload_begin_info);
 	command_buffer_region_begin(upload_command_buffer, "Upload stage");
 
+	{
+		ZoneScopedN("Upload image data");
+
+		for (auto upload_data : image_manager.upload_queue)
+		{
+			auto image_size = upload_data.image_size.width * upload_data.image_size.height * 4;
+
+			memcpy(staging_buffer_ptr + linear_allocator, upload_data.pixels, image_size);
+			stbi_image_free(upload_data.pixels); // Pixels are no longer required on RAM
+
+			// Transition to copy layout
+			VkImageMemoryBarrier to_transfer_transition_barrier = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.srcAccessMask = 0,
+				.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+				.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.image = image_manager.sampled_images[upload_data.image_handle].image.image,
+				.subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = 0,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+			};
+			vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+								 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+								 &to_transfer_transition_barrier);
+
+			// Enqueue copy
+			VkBufferImageCopy region = {
+				.imageSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = 0,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+				.imageExtent = {
+					.width = upload_data.image_size.width,
+					.height = upload_data.image_size.height,
+					.depth = 1,
+				},
+			};
+			vkCmdCopyBufferToImage(upload_command_buffer, current_frame->staging_buffer.buffer,
+								   image_manager.sampled_images[upload_data.image_handle].image.image,
+								   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+			linear_allocator += image_size;
+
+			// Immediately transition into proper layout
+			VkImageMemoryBarrier from_transform_transition_barrier = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				.image = image_manager.sampled_images[upload_data.image_handle].image.image,
+				.subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = 0,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+			};
+			vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+								 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+								 &from_transform_transition_barrier);
+		}
+		image_manager.upload_queue.clear(); // Clear queue after we schedule all uploads
+	}
+
 	// Build and stage per-frame data
 	{
 		ZoneScopedN("Build per frame uniform data");
@@ -1683,10 +1883,10 @@ auto App::draw() -> void
 		vkResetFences(device, 1, &current_frame->render_fence);
 	}
 
-	// Acquire swapchain image and recreate swapchain if necessary
+	// Acquire swapchain image_handle and recreate swapchain if necessary
 	uint32_t swapchain_image_index;
 	{
-		ZoneScopedN("Swapchain image acquiring");
+		ZoneScopedN("Swapchain image_handle acquiring");
 
 		auto acquire_result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
 													current_frame->present_semaphore, VK_NULL_HANDLE,
@@ -1744,7 +1944,7 @@ auto App::draw() -> void
 		VkImageMemoryBarrier render_transition_barrier = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, // Legal, since we're clearing this image on render load anyway
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, // Legal, since we're clearing this image_handle on render load anyway
 			.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,

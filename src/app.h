@@ -17,6 +17,9 @@
 #include <LivePP/API/LPP_API_x64_CPP.h>
 #endif
 
+#include <queue>
+#include <stb_image.h>
+
 // Note that VkPhysicalDeviceVulkan1xProperties properties may have invalid pNext.
 struct Device_Properties
 {
@@ -228,6 +231,29 @@ private:
 	auto reinitialize(App* app) -> void;
 };
 
+class Image_Manager
+{
+public:
+	struct Sampled_Image
+	{
+		AllocatedImage image;
+		VkImageView view;
+		VkSampler sampler;
+	};
+	typedef uint32_t Image_Handle;
+
+	struct Upload_Data
+	{
+		stbi_uc* pixels;
+		Size image_size;
+		Image_Handle image_handle;
+	};
+
+	std::vector<Sampled_Image> sampled_images;
+	std::deque<Upload_Data> upload_queue;
+};
+
+auto load_file(const char* file_path) -> std::vector<uint8_t>;
 
 // Objects "owned by frame" for double or triple buffering
 struct Frame_Data
@@ -240,7 +266,7 @@ struct Frame_Data
 	};
 	Frame_Oddity_Data frame_oddity_data[2];
 
-	// Semaphore signaling swapchain presentation event, or more specifically, swapchain image acquire event
+	// Semaphore signaling swapchain presentation event, or more specifically, swapchain image_handle acquire event
 	VkSemaphore present_semaphore;
 	VkSemaphore render_semaphore; // Same as fence below. Presentation event waits on it
 	VkFence render_fence; // Will be signaled once all rendering operations for this frame are done
@@ -278,6 +304,8 @@ private:
 
 	// Subsystems
 	Camera camera;
+
+	Image_Manager image_manager{};
 
 	VkInstance instance{};
 	uint32_t instance_version{};
@@ -346,7 +374,7 @@ private:
 	auto destroy_frame_data() -> void;
 
 	auto create_buffers() -> void;
-	auto upload_vertex_data() -> void;
+	auto load_scene_data() -> void;
 	auto create_depth_buffer() -> void;
 	auto create_descriptors() -> void;
 	auto create_shaders() -> void;
