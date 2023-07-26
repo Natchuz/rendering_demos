@@ -584,7 +584,8 @@ auto App::create_device() -> void
 		auto dynamic_rendering = candidate.device_features13.dynamicRendering;
 		auto synchronization2 = candidate.device_features13.synchronization2;
 		auto anisotropy = candidate.device_features.samplerAnisotropy;
-		if (!dynamic_rendering || !synchronization2 || !anisotropy)
+		auto variable_descriptor = candidate.device_features12.descriptorBindingVariableDescriptorCount;
+		if (!dynamic_rendering || !synchronization2 || !anisotropy || !variable_descriptor)
 		{
 			continue;
 		}
@@ -711,6 +712,12 @@ auto App::create_device() -> void
 		.dynamicRendering = true,
 	};
 
+	VkPhysicalDeviceVulkan12Features device_12_features = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		.pNext = &device_13_features,
+		.descriptorBindingVariableDescriptorCount = true,
+	};
+
 	VkPhysicalDeviceFeatures device_core_features = {
 		.samplerAnisotropy = true,
 	};
@@ -721,7 +728,7 @@ auto App::create_device() -> void
 
 	VkDeviceCreateInfo device_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-		.pNext = &device_13_features,
+		.pNext = &device_12_features,
 		.queueCreateInfoCount = 1,
 		.pQueueCreateInfos = &queue_create_info,
 		.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size()),
@@ -1331,8 +1338,17 @@ auto App::create_descriptors() -> void {
 			},
 		};
 
+		VkDescriptorBindingFlags flags[] = {0, VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
+
+		VkDescriptorSetLayoutBindingFlagsCreateInfo layout_flags_create_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+			.bindingCount = 2,
+			.pBindingFlags = flags,
+		};
+
 		VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = &layout_flags_create_info,
 			.flags = 0,
 			.bindingCount = 2,
 			.pBindings = set_layout_bindings,
@@ -1365,8 +1381,17 @@ auto App::create_descriptors() -> void {
 	}
 
 	{
+		uint32_t counts[] = { 1 };
+
+		VkDescriptorSetVariableDescriptorCountAllocateInfo descriptor_variable_size_allocate_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+			.descriptorSetCount = 1,
+			.pDescriptorCounts = counts,
+		};
+
 		VkDescriptorSetAllocateInfo descriptor_set_allocate_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.pNext = &descriptor_variable_size_allocate_info,
 			.descriptorPool = descriptor_pool,
 			.descriptorSetCount = 1,
 			.pSetLayouts = &per_frame_descriptor_set_layout,
