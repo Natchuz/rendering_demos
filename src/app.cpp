@@ -116,6 +116,7 @@ auto Timings::update_timings() -> void
 	auto now = std::chrono::high_resolution_clock::now();
 	auto time_span = std::chrono::duration_cast<std::chrono::duration<float>>(now - frame_time_stamp);
 	delta_time = time_span.count();
+	delta_time = std::clamp(delta_time, 0.0f, 0.5f); // Temporary fix
 	frame_time_stamp = now;
 }
 
@@ -302,6 +303,8 @@ auto App::entry() -> void
 
 	is_running = true;
 	frame_number = 0;
+
+	rotation = 0;
 
 	spdlog::info("Initialization done, running");
 
@@ -1776,7 +1779,7 @@ auto App::draw() -> void
 					.layerCount = 1,
 				},
 			};
-			vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
 								 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
 								 &to_transfer_transition_barrier);
 
@@ -2120,8 +2123,8 @@ auto App::draw() -> void
 	{
 		ZoneScopedN("Submit draw");
 
-		VkPipelineStageFlags dst_stage_mask[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-												  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT };
+		VkPipelineStageFlags dst_stage_mask[] = { VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+												  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT }; // Transfer works too, not sure why
 		VkSemaphore wait_semaphores[] = { current_frame->present_semaphore, current_frame->upload_semaphore};
 		VkSubmitInfo submit_info = {
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,

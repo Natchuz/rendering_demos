@@ -19,6 +19,7 @@
 
 #include <queue>
 #include <stb_image.h>
+#include <chrono>
 
 // Note that VkPhysicalDeviceVulkan1xProperties properties may have invalid pNext.
 struct Device_Properties
