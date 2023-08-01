@@ -284,13 +284,12 @@ auto App::entry() -> void
 	create_instance();
 	create_device();
 	create_allocator();
-	create_surface();
-	create_swapchain();
+	init_swapchain(this);
 
 	create_frame_data();
 
 	create_buffers();
-	create_depth_buffer();
+	depth_buffer_create(this);
 	create_shaders();
 
 	init_imgui();
@@ -337,6 +336,7 @@ auto App::entry() -> void
 
 	is_running = false;
 
+	deinit_swapchain(this);
 	platform->window_destroy();
 
 	hot_reload.close();
@@ -800,105 +800,108 @@ auto App::create_allocator() -> void {
 	vmaCreateAllocator(&create_info, &vma_allocator);
 }
 
-auto App::create_surface() -> void
+void init_swapchain(App* app)
 {
-	if (!platform->check_presentation_support(instance, physical_device, gfx_queue_family_index))
-	{
-		throw std::runtime_error("Platform does not support presentation!");
-	}
+	ZoneScopedN("Swapchain initialization");
 
-	platform->create_surface(instance, &surface);
-}
+	Swapchain* swapchain = &app->swapchain; // Shortcut
 
-auto App::create_swapchain(bool recreate) -> void
-{
+	app->platform->create_surface(app->instance, &swapchain->surface);
+
 	uint32_t present_modes_count;
-	vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_modes_count, nullptr);
-	std::vector<VkPresentModeKHR> present_modes(present_modes_count);
-	vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &present_modes_count, present_modes.data());
-	VkPresentModeKHR selected_present_mode = VK_PRESENT_MODE_FIFO_KHR; // Always supported
-	for (const auto &present_mode: present_modes)
+	vkGetPhysicalDeviceSurfacePresentModesKHR(app->physical_device, swapchain->surface, &present_modes_count, nullptr);
+	swapchain->present_modes = std::vector<VkPresentModeKHR>(present_modes_count);
+	vkGetPhysicalDeviceSurfacePresentModesKHR(app->physical_device, swapchain->surface, &present_modes_count,
+											  swapchain->present_modes.data());
+
+	// Automatically select best present MODE if available
+	swapchain->selected_present_mode = VK_PRESENT_MODE_FIFO_KHR; // Required to be always supported.
+	for (const auto &present_mode: swapchain->present_modes)
 	{
 		if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
 		{
-			selected_present_mode = present_mode;
+			swapchain->selected_present_mode = present_mode;
 			break;
 		}
 	}
 
 	uint32_t formats_count;
-	vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &formats_count, nullptr);
-	std::vector<VkSurfaceFormatKHR> formats(formats_count);
-	vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &formats_count, formats.data());
-	VkSurfaceFormatKHR selected_surface_format = formats[0];
-	for (const auto &format: formats)
+	vkGetPhysicalDeviceSurfaceFormatsKHR(app->physical_device, swapchain->surface, &formats_count, nullptr);
+	swapchain->formats = std::vector<VkSurfaceFormatKHR>(formats_count);
+	vkGetPhysicalDeviceSurfaceFormatsKHR(app->physical_device, swapchain->surface, &formats_count,
+										 swapchain->formats.data());
+
+	swapchain->selected_format = swapchain->formats[0];
+	for (const auto &format : swapchain->formats)
 	{
 		if (format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
 		{
-			selected_surface_format = format;
+			swapchain->selected_format = format;
 			break;
 		}
 	}
-	swapchain_image_format = selected_surface_format.format;
 
 	// Technically, we should query for capabilities for selected present mode, but we're using swapchain
 	// images only as color attachment, so it doesn't matter since color attachment usage is required anyway.
-	VkSurfaceCapabilitiesKHR surface_capabilities;
-	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surface_capabilities);
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(app->physical_device, swapchain->surface,
+											  &swapchain->surface_capabilities);
 
-	window_extent = surface_capabilities.currentExtent;
-
+	auto surface_extent = swapchain->surface_capabilities.currentExtent;
 	// Special value indicating that surface size will be determined by swapchain
-	if (window_extent.width == 0xFFFFFFFF && window_extent.width == 0xFFFFFFFF) {
-		auto size = platform->window_get_size();
-
-		window_extent = {size.width, size.height};
-		window_extent.width = std::clamp(
-			window_extent.width,
-			surface_capabilities.minImageExtent.width,
-			surface_capabilities.maxImageExtent.width);
-		window_extent.height = std::clamp(
-			window_extent.height,
-			surface_capabilities.minImageExtent.height,
-			surface_capabilities.maxImageExtent.height);
+	if (surface_extent.width == 0xFFFFFFFF && surface_extent.height == 0xFFFFFFFF) {
+		auto size = app->platform->window_get_size();
+		surface_extent = {size.width, size.height };
+		surface_extent.width = std::clamp(
+			surface_extent.width,
+			swapchain->surface_capabilities.minImageExtent.width,
+			swapchain->surface_capabilities.maxImageExtent.width);
+		surface_extent.height = std::clamp(
+			surface_extent.height,
+			swapchain->surface_capabilities.minImageExtent.height,
+			swapchain->surface_capabilities.maxImageExtent.height);
 	}
+	swapchain->extent = surface_extent;
 
-	uint32_t image_count = surface_capabilities.minImageCount + 1;
-	if (surface_capabilities.maxImageCount > 0 && image_count > surface_capabilities.maxImageCount)
+	uint32_t requested_image_count = swapchain->surface_capabilities.minImageCount + 1;
+	if (swapchain->surface_capabilities.maxImageCount > 0 && // When zero, threre is no max value
+		swapchain->surface_capabilities.maxImageCount < requested_image_count)
 	{
-		image_count = surface_capabilities.maxImageCount;
+		requested_image_count = swapchain->surface_capabilities.maxImageCount;
 	}
 
 	VkSwapchainCreateInfoKHR swapchain_create_info = {
 		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-		.surface = surface,
-		.minImageCount = image_count,
-		.imageFormat = selected_surface_format.format,
-		.imageColorSpace = selected_surface_format.colorSpace,
-		.imageExtent = window_extent,
+		.surface          = swapchain->surface,
+		.minImageCount    = requested_image_count,
+		.imageFormat      = swapchain->selected_format.format,
+		.imageColorSpace  = swapchain->selected_format.colorSpace,
+		.imageExtent      = surface_extent,
 		.imageArrayLayers = 1,
-		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+		.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.preTransform = surface_capabilities.currentTransform,
-		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-		.presentMode = selected_present_mode,
-		.clipped = true,
-		.oldSwapchain = recreate ? swapchain : VK_NULL_HANDLE, // Is returning to the same variable fine?
+		.preTransform     = swapchain->surface_capabilities.currentTransform,
+		.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+		.presentMode      = swapchain->selected_present_mode,
+		.clipped          = true,
+		.oldSwapchain     = VK_NULL_HANDLE,
 	};
-	vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr, &swapchain);
+	vkCreateSwapchainKHR(app->device, &swapchain_create_info, nullptr, &swapchain->handle);
 
-	vkGetSwapchainImagesKHR(device, swapchain, &swapchain_images_count, nullptr);
-	swapchain_images = std::vector<VkImage>(swapchain_images_count);
-	vkGetSwapchainImagesKHR(device, swapchain, &swapchain_images_count, swapchain_images.data());
+	uint32_t image_count;
+	vkGetSwapchainImagesKHR(app->device, swapchain->handle, &image_count, nullptr);
+	std::vector<VkImage> images(image_count);
+	vkGetSwapchainImagesKHR(app->device, swapchain->handle, &image_count, images.data());
 
-	swapchain_image_views = std::vector<VkImageView>(swapchain_images_count);
-	for (uint32_t image_index = 0; image_index < swapchain_images_count; image_index++)
+	swapchain->images       = std::vector<Combined_View_Image>(image_count);
+	swapchain->images_count = image_count;
+
+	for (uint32_t image_index = 0; image_index < image_count; image_index++)
 	{
 		VkImageViewCreateInfo image_view_create_info = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-			.image = swapchain_images[image_index],
+			.image    = images[image_index],
 			.viewType = VK_IMAGE_VIEW_TYPE_2D,
-			.format = swapchain_image_format,
+			.format   = swapchain->selected_format.format,
 			.components = {
 				.r = VK_COMPONENT_SWIZZLE_IDENTITY,
 				.g = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -906,16 +909,200 @@ auto App::create_swapchain(bool recreate) -> void
 				.a = VK_COMPONENT_SWIZZLE_IDENTITY,
 			},
 			.subresourceRange = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.baseMipLevel = 0,
-				.levelCount = 1,
+				.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel   = 0,
+				.levelCount     = 1,
 				.baseArrayLayer = 0,
-				.layerCount = 1,
+				.layerCount     = 1,
 			},
 		};
 
-		vkCreateImageView(device, &image_view_create_info, nullptr, &swapchain_image_views[image_index]);
+		vkCreateImageView(app->device, &image_view_create_info, nullptr, &swapchain->images[image_index].view);
+		swapchain->images[image_index].image = images[image_index];
 	}
+}
+
+void deinit_swapchain(App* app)
+{
+	ZoneScopedN("Swapchain destruction");
+
+	Swapchain* swapchain = &app->swapchain; // Shortcut
+
+	for (const auto &image : app->swapchain.images)
+	{
+		vkDestroyImageView(app->device, image.view, nullptr);
+	}
+
+	vkDestroySwapchainKHR(app->device, swapchain->handle, nullptr);
+	vkDestroySurfaceKHR(app->instance, swapchain->surface, nullptr);
+}
+
+bool recreate_swapchain(App* app)
+{
+	ZoneScopedN("Swapchain recreation");
+
+	Swapchain* swapchain = &app->swapchain; // Shortcut
+
+	// Requery surface capabilities
+	VkSurfaceCapabilitiesKHR surface_capabilities;
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(app->physical_device, swapchain->surface, &surface_capabilities);
+
+	auto surface_extent = surface_capabilities.currentExtent;
+	// Special value indicating that surface size will be determined by swapchain
+	if (surface_extent.width == 0xFFFFFFFF && surface_extent.height == 0xFFFFFFFF) {
+		auto size = app->platform->window_get_size();
+		surface_extent = {size.width, size.height };
+		surface_extent.width = std::clamp(
+			surface_extent.width,
+			surface_capabilities.minImageExtent.width,
+			surface_capabilities.maxImageExtent.width);
+		surface_extent.height = std::clamp(
+			surface_extent.height,
+			surface_capabilities.minImageExtent.height,
+			surface_capabilities.maxImageExtent.height);
+	}
+
+	// Swapchain is (0, 0), thus window is probably minimized, don't recreate swapchain then.
+	if (surface_extent.width == 0 && surface_extent.height == 0)
+	{
+		return false;
+	}
+
+	// Destroy associated resources
+	for (const auto &image : app->swapchain.images)
+	{
+		vkDestroyImageView(app->device, image.view, nullptr);
+	}
+	vkDestroySwapchainKHR(app->device, swapchain->handle, nullptr);
+
+	swapchain->surface_capabilities = surface_capabilities;
+	swapchain->extent               = surface_extent;
+
+	uint32_t requested_image_count = swapchain->surface_capabilities.minImageCount + 1;
+	if (swapchain->surface_capabilities.maxImageCount > 0 && // When zero, threre is no max value
+		swapchain->surface_capabilities.maxImageCount < requested_image_count)
+	{
+		requested_image_count = swapchain->surface_capabilities.maxImageCount;
+	}
+
+	VkSwapchainCreateInfoKHR swapchain_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+		.surface          = swapchain->surface,
+		.minImageCount    = requested_image_count,
+		.imageFormat      = swapchain->selected_format.format,
+		.imageColorSpace  = swapchain->selected_format.colorSpace,
+		.imageExtent      = surface_extent,
+		.imageArrayLayers = 1,
+		.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.preTransform     = swapchain->surface_capabilities.currentTransform,
+		.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+		.presentMode      = swapchain->selected_present_mode,
+		.clipped          = true,
+		.oldSwapchain     = VK_NULL_HANDLE,
+	};
+	vkCreateSwapchainKHR(app->device, &swapchain_create_info, nullptr, &swapchain->handle);
+
+	uint32_t image_count;
+	vkGetSwapchainImagesKHR(app->device, swapchain->handle, &image_count, nullptr);
+	std::vector<VkImage> images(image_count);
+	vkGetSwapchainImagesKHR(app->device, swapchain->handle, &image_count, images.data());
+
+	swapchain->images       = std::vector<Combined_View_Image>(image_count);
+	swapchain->images_count = image_count;
+
+	for (uint32_t image_index = 0; image_index < image_count; image_index++)
+	{
+		VkImageViewCreateInfo image_view_create_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image    = images[image_index],
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format   = swapchain->selected_format.format,
+			.components = {
+				.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+				.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+				.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+				.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+			},
+			.subresourceRange = {
+				.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel   = 0,
+				.levelCount     = 1,
+				.baseArrayLayer = 0,
+				.layerCount     = 1,
+			},
+		};
+
+		vkCreateImageView(app->device, &image_view_create_info, nullptr, &swapchain->images[image_index].view);
+		swapchain->images[image_index].image = images[image_index];
+	}
+
+	return true;
+}
+
+void recreate_swapchain_dependent_resources(App* app)
+{
+	ZoneScopedN("Recreation of swapchain-dependent resources");
+
+	depth_buffer_destroy(app);
+	depth_buffer_create(app);
+}
+
+void depth_buffer_create(App* app) {
+	ZoneScopedN("Depth buffer creation");
+
+	VkImageCreateInfo image_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.flags = 0,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_D32_SFLOAT,
+		.extent = { app->swapchain.extent.width, app->swapchain.extent.height, 1 },
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+
+	VmaAllocationCreateInfo vma_allocation_info = {
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+	};
+
+	vmaCreateImage(app->vma_allocator, &image_create_info, &vma_allocation_info,
+				   &app->depth_buffer.image, &app->depth_buffer.allocation,
+				   nullptr);
+
+	VkImageViewCreateInfo image_view_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = app->depth_buffer.image,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = VK_FORMAT_D32_SFLOAT,
+		.components = {
+			.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+		},
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+	};
+
+	vkCreateImageView(app->device, &image_view_create_info, nullptr, &app->depth_buffer.view);
+}
+
+void depth_buffer_destroy(App* app)
+{
+	ZoneScopedN("Depth buffer destruction");
+
+	vkDestroyImageView(app->device, app->depth_buffer.view, nullptr);
+	vmaDestroyImage(app->vma_allocator, app->depth_buffer.image, app->depth_buffer.allocation);
 }
 
 auto App::create_frame_data() -> void
@@ -1273,53 +1460,6 @@ auto App::load_scene_data() -> void {
 	});
 }
 
-auto App::create_depth_buffer() -> void {
-	VkImageCreateInfo image_create_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.flags = 0,
-		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_D32_SFLOAT,
-		.extent = { window_extent.width, window_extent.height, 1 },
-		.mipLevels = 1,
-		.arrayLayers = 1,
-		.samples = VK_SAMPLE_COUNT_1_BIT,
-		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-	};
-
-	VmaAllocationCreateInfo vma_allocation_info = {
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-	};
-
-	vmaCreateImage(vma_allocator, &image_create_info, &vma_allocation_info,
-				   &depth_buffer.image, &depth_buffer.allocation,
-				   nullptr);
-
-	VkImageViewCreateInfo image_view_create_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-		.image = depth_buffer.image,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = VK_FORMAT_D32_SFLOAT,
-		.components = {
-			.r = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.g = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.b = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.a = VK_COMPONENT_SWIZZLE_IDENTITY,
-		},
-		.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-			.baseMipLevel = 0,
-			.levelCount = 1,
-			.baseArrayLayer = 0,
-			.layerCount = 1,
-		},
-	};
-
-	vkCreateImageView(device, &image_view_create_info, nullptr, &depth_buffer_view);
-}
-
 auto App::create_descriptors() -> void {
 
 	{
@@ -1601,7 +1741,7 @@ auto App::create_pipeline() -> void
 	VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 		.colorAttachmentCount = 1,
-		.pColorAttachmentFormats = &swapchain_image_format,
+		.pColorAttachmentFormats = &swapchain.selected_format.format,
 		.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT,
 		.stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
 	};
@@ -1683,11 +1823,11 @@ auto App::init_imgui() -> void {
 		.Queue = gfx_queue,
 		.PipelineCache = VK_NULL_HANDLE,
 		.DescriptorPool = imgui_descriptor_pool,
-		.MinImageCount = swapchain_images_count,
-		.ImageCount = swapchain_images_count,
+		.MinImageCount = swapchain.images_count,
+		.ImageCount = swapchain.images_count,
 		.MSAASamples = VK_SAMPLE_COUNT_1_BIT,
 		.UseDynamicRendering = true,
-		.ColorAttachmentFormat = swapchain_image_format,
+		.ColorAttachmentFormat = swapchain.selected_format.format,
 	};
 	//ImGui_ImplVulkan_LoadFunctions();
 	ImGui_ImplVulkan_Init(&init_info, VK_NULL_HANDLE);
@@ -1733,8 +1873,7 @@ auto App::init_imgui() -> void {
 	}
 }
 
-auto App::draw() -> void
-{
+auto App::draw() -> void {
 	ZoneScopedN("Draw");
 
 	auto current_frame = &frame_data[frame_id];
@@ -1761,7 +1900,7 @@ auto App::draw() -> void
 	queue_insert_marker(gfx_queue, "Note: Frame: {} (id: {}, oddity: {})",
 						frame_number, frame_id, frame_oddity);
 
-	char* staging_buffer_ptr = static_cast<char*>(current_frame->staging_buffer_ptr);
+	char *staging_buffer_ptr = static_cast<char *>(current_frame->staging_buffer_ptr);
 	size_t linear_allocator = 0;
 
 	// This is the offset inside per frame data buffer that will be used during this frame
@@ -1781,8 +1920,7 @@ auto App::draw() -> void
 	{
 		ZoneScopedN("Upload image data");
 
-		for (auto upload_data : image_manager.upload_queue)
-		{
+		for (auto upload_data: image_manager.upload_queue) {
 			auto image_size = upload_data.image_size.width * upload_data.image_size.height * 4;
 
 			memcpy(staging_buffer_ptr + linear_allocator, upload_data.pixels, image_size);
@@ -1862,12 +2000,12 @@ auto App::draw() -> void
 			200.0f);
 		// projection[1][1] *= -1;
 		glm::mat4 model = glm::rotate(
-			glm::mat4{ 1.0f },
+			glm::mat4{1.0f},
 			rotation,
 			glm::vec3(0, 1, 0));
 		glm::mat4 render_matrix = projection * view * model;
 
-		auto uniform_data = reinterpret_cast<Frame_Uniform_Data*>(staging_buffer_ptr + linear_allocator);
+		auto uniform_data = reinterpret_cast<Frame_Uniform_Data *>(staging_buffer_ptr + linear_allocator);
 
 		uniform_data->render_matrix = render_matrix;
 
@@ -1912,42 +2050,42 @@ auto App::draw() -> void
 	}
 
 	// Acquire swapchain image_handle and recreate swapchain if necessary
+	Combined_View_Image swapchain_image;
 	uint32_t swapchain_image_index;
 	{
 		ZoneScopedN("Swapchain image_handle acquiring");
 
-		auto acquire_result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
+		auto acquire_result = vkAcquireNextImageKHR(device, swapchain.handle, UINT64_MAX,
 													current_frame->present_semaphore, VK_NULL_HANDLE,
 													&swapchain_image_index);
+		swapchain_image = swapchain.images[swapchain_image_index];
 
-		// Recreate swapchain if necessary
-		if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR || acquire_result == VK_SUBOPTIMAL_KHR)
-		{
-			ZoneScopedN("Swapchain recreation");
+		if (acquire_result == VK_SUBOPTIMAL_KHR || acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
+			ZoneScopedN("Swapchain recreation request");
 
-			// Bring all fences from all frames that needs to be waited upon
-			std::vector<VkFence> fences_to_await = {};
-			for (int frame_i=0; frame_i < frames_in_flight; frame_i++)
-			{
-				if (frame_i != frame_id)
-				{
-					fences_to_await.push_back(frame_data[frame_i].render_fence);
-				}
-			}
+			// In theory, if we get VK_ERROR_OUT_OF_DATE_KHR, but we'll have minimized window, the extent will be
+			// (0, 0) and swapchain will not be recreated, this no resources will be created. This is may crash,
+			// since well, we need a swapchain (although we could skip rendering at all, but meh, idk).
+			// But, this is yet to be observed behaviour, hope it doesn't happen. Maybe, there is a valid usage
+			// guarantee for this???
 
 			{
 				ZoneScopedN("Idling on previous frames");
-				vkWaitForFences(device, frames_in_flight - 1, fences_to_await.data(), true, UINT64_MAX);
+
+				// We could wait on fences, but I'm lazy
+				vkDeviceWaitIdle(device);
 			}
 
-			for (const auto &image_view : swapchain_image_views)
+			if (recreate_swapchain(this))
 			{
-				vkDestroyImageView(device, image_view, nullptr);
-			}
-			create_swapchain(true);
+				recreate_swapchain_dependent_resources(this);
 
-			vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, current_frame->present_semaphore, VK_NULL_HANDLE,
-								  &swapchain_image_index);
+				// FIXME: Following unfortunately will result in validation error, since present semaphore isn't
+				// being "reset" on swapchain destroy.
+				vkAcquireNextImageKHR(device, swapchain.handle, UINT64_MAX, current_frame->present_semaphore,
+									  VK_NULL_HANDLE, &swapchain_image_index);
+				swapchain_image = swapchain.images[swapchain_image_index];
+			}
 		}
 	}
 
@@ -1976,7 +2114,7 @@ auto App::draw() -> void
 			.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = swapchain_images[swapchain_image_index],
+			.image = swapchain_image.image,
 			.subresourceRange = range,
 		};
 
@@ -1998,7 +2136,7 @@ auto App::draw() -> void
 
 		VkRenderingAttachmentInfo swapchain_attachment_info = {
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.imageView = swapchain_image_views[swapchain_image_index],
+			.imageView = swapchain_image.view,
 			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			.resolveMode = VK_RESOLVE_MODE_NONE,
 			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -2010,7 +2148,7 @@ auto App::draw() -> void
 
 		VkRenderingAttachmentInfo depth_attachment_info = {
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.imageView = depth_buffer_view,
+			.imageView = depth_buffer.view,
 			.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
 			.resolveMode = VK_RESOLVE_MODE_NONE,
 			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -2023,7 +2161,7 @@ auto App::draw() -> void
 			.flags = 0,
 			.renderArea = {
 				.offset = {}, // Zero
-				.extent = window_extent,
+				.extent = swapchain.extent,
 			},
 			.layerCount = 1,
 			.viewMask = 0,
@@ -2034,13 +2172,13 @@ auto App::draw() -> void
 
 		VkViewport viewport = {
 			.x = 0,
-			.y = (float) window_extent.height,
-			.width = (float) window_extent.width,
-			.height = -1 * (float) window_extent.height,
+			.y = (float) swapchain.extent.height,
+			.width = (float) swapchain.extent.width,
+			.height = -1 * (float) swapchain.extent.height,
 			.minDepth = 0.0f,
 			.maxDepth = 1.0f,
 		};
-		VkRect2D scissor = { .offset = {}, .extent = window_extent, };
+		VkRect2D scissor = {.offset = {}, .extent = swapchain.extent,};
 
 		vkCmdSetViewport(draw_command_buffer, 0, 1, &viewport);
 		vkCmdSetScissor(draw_command_buffer, 0, 1, &scissor);
@@ -2082,7 +2220,7 @@ auto App::draw() -> void
 
 		VkRenderingAttachmentInfo imgui_pass_swapchain_attachment_info = {
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.imageView = swapchain_image_views[swapchain_image_index],
+			.imageView = swapchain_image.view,
 			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			.resolveMode = VK_RESOLVE_MODE_NONE,
 			.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -2094,7 +2232,7 @@ auto App::draw() -> void
 			.flags = 0,
 			.renderArea = {
 				.offset = {}, // Zero
-				.extent = window_extent,
+				.extent = swapchain.extent,
 			},
 			.layerCount = 1,
 			.viewMask = 0,
@@ -2122,14 +2260,14 @@ auto App::draw() -> void
 			.layerCount = 1,
 		};
 
-		VkImageMemoryBarrier present_transition_barrier {
+		VkImageMemoryBarrier present_transition_barrier{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 			.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = swapchain_images[swapchain_image_index],
+			.image = swapchain_image.image,
 			.subresourceRange = range,
 		};
 
@@ -2148,9 +2286,9 @@ auto App::draw() -> void
 	{
 		ZoneScopedN("Submit draw");
 
-		VkPipelineStageFlags dst_stage_mask[] = { VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-												  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT }; // Transfer works too, not sure why
-		VkSemaphore wait_semaphores[] = { current_frame->present_semaphore, current_frame->upload_semaphore};
+		VkPipelineStageFlags dst_stage_mask[] = {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+												 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}; // Transfer works too, not sure why
+		VkSemaphore wait_semaphores[] = {current_frame->present_semaphore, current_frame->upload_semaphore};
 		VkSubmitInfo submit_info = {
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 			.waitSemaphoreCount = 2,
@@ -2172,7 +2310,7 @@ auto App::draw() -> void
 			.waitSemaphoreCount = 1,
 			.pWaitSemaphores = &current_frame->render_semaphore,
 			.swapchainCount = 1,
-			.pSwapchains = &swapchain,
+			.pSwapchains = &swapchain.handle,
 			.pImageIndices = &swapchain_image_index,
 		};
 		vkQueuePresentKHR(gfx_queue, &present_info);

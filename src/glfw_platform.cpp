@@ -52,8 +52,6 @@ void GLFW_Platform::window_init(Window_Params params)
 	assert(glfw_window == nullptr);
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // Disable OpenGL things
-	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-	//glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
 	glfw_window = glfwCreateWindow(
 		static_cast<int32_t>(params.size.width),
 		static_cast<int32_t>(params.size.height),

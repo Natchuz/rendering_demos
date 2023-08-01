@@ -283,6 +283,48 @@ struct Frame_Uniform_Data
 	glm::mat4x4 render_matrix;
 };
 
+struct Combined_View_Image
+{
+	VkImage     image;
+	VkImageView view;
+};
+
+struct Allocated_View_Image : Combined_View_Image
+{
+	VmaAllocation allocation;
+};
+
+struct Swapchain
+{
+	VkSwapchainKHR handle;
+	VkSurfaceKHR   surface;
+
+	VkSurfaceCapabilitiesKHR        surface_capabilities;
+	std::vector<VkPresentModeKHR>   present_modes;
+	VkPresentModeKHR                selected_present_mode;
+	std::vector<VkSurfaceFormatKHR> formats;
+	VkSurfaceFormatKHR              selected_format;
+
+	VkExtent2D extent;
+
+	std::vector<Combined_View_Image> images;
+	uint32_t                         images_count; // This is commonly used, but images.size() is uint64_t.
+};
+void init_swapchain    (App* app); // Will create all resources, called on app bootstrap
+void deinit_swapchain  (App* app);
+// Recreates swapchain based on selected_* values in swapchain struct. Requeries capabilities.
+// IMPORTANT: may *not* recreate swapchain, for example if window get minimized, resulting in (0,0) surface extents.
+// If it doesn't recreate swapchain, this function will return false and you should use it to avoid recreating
+// framebuffer-size-dependent resources when unnecessary.
+bool recreate_swapchain(App* app);
+
+// Recreate all resources that are dependent on size of swapchain, e.g. depth buffer or gbuffers.
+// Call this after swapchain recreation.
+void recreate_swapchain_dependent_resources(App* app);
+
+void depth_buffer_create (App* app);
+void depth_buffer_destroy(App* app);
+
 class App
 {
 	friend Hot_Reload;
@@ -294,7 +336,7 @@ public:
 
 	auto entry() -> void;
 
-private:
+public:
 	Platform* platform;
 	Hot_Reload hot_reload;
 	Input input{}; // Especially important to zero out mouse_x and mouse_y at init
@@ -319,14 +361,7 @@ private:
 	uint32_t gfx_queue_family_index{};
 
 	VmaAllocator vma_allocator{};
-
-	VkSurfaceKHR surface{};
-
-	VkSwapchainKHR swapchain{};
-	VkFormat swapchain_image_format;
-	uint32_t swapchain_images_count{};
-	std::vector<VkImage> swapchain_images;
-	std::vector<VkImageView> swapchain_image_views;
+	Swapchain swapchain;
 
 	uint32_t frames_in_flight;
 	uint32_t frame_id; // Represent frame id in multiple buffering sense - 0, 1 or 2 for triple buffering.
@@ -337,8 +372,7 @@ private:
 
 	AllocatedBuffer per_frame_data_buffer{};
 
-	AllocatedImage depth_buffer{};
-	VkImageView depth_buffer_view{};
+	Allocated_View_Image depth_buffer;
 
 	VkDescriptorSetLayout per_frame_descriptor_set_layout{};
 	VkDescriptorPool descriptor_pool{};
@@ -346,8 +380,6 @@ private:
 	
 	VkShaderModule vertex_shader{};
 	VkShaderModule fragment_shader{};
-
-	VkExtent2D window_extent{};
 
 	VkPipelineLayout pipeline_layout{};
 	VkPipeline pipeline{};
@@ -368,15 +400,12 @@ private:
 	auto create_instance() -> void;
 	auto create_device() -> void;
     auto create_allocator() -> void;
-	auto create_surface() -> void;
-	auto create_swapchain(bool recreate = false) -> void;
 
 	auto create_frame_data() -> void;
 	auto destroy_frame_data() -> void;
 
 	auto create_buffers() -> void;
 	auto load_scene_data() -> void;
-	auto create_depth_buffer() -> void;
 	auto create_descriptors() -> void;
 	auto create_shaders() -> void;
 	auto create_pipeline() -> void;
