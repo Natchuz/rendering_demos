@@ -1,7 +1,10 @@
+#include "application.h"
+
+#include "common.h"
+#include "input.h"
+#include "platform.h"
+
 #include <stdexcept>
-
-#include "app.h"
-
 #include <GLFW/glfw3.h>
 #include <imgui/backends/imgui_impl_glfw.h>
 
@@ -17,6 +20,8 @@ public:
 
 	void poll_events() override;
 
+	// --- Windowing ---
+
 	void window_init(Window_Params params) override;
 	void window_destroy() override;
 	void window_set_name(std::string name) override;
@@ -30,22 +35,24 @@ public:
 	void create_surface(VkInstance instance, VkSurfaceKHR* surface) override;
 	std::span<const char *> get_required_extensions() override;
 
+	// --- ImGui ---
+
 	void imgui_init() override;
 	void imgui_new_frame() override;
 	void imgui_shutdown() override;
 
+	// --- Input ---
+
 	double_t previous_mouse_x = 0, previous_mouse_y = 0;
 	bool was_inhibited = false;
 
-	void fill_input(Input* input) override;
+	void fill_input() override;
 };
 
 void GLFW_Platform::poll_events()
 {
 	glfwPollEvents();
 }
-
-// --------------------------------------------------------------------------------------------------------------------
 
 void GLFW_Platform::window_init(Window_Params params)
 {
@@ -86,11 +93,10 @@ Size GLFW_Platform::window_get_size()
 	return Size{ static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
 }
 
-bool GLFW_Platform::window_requested_to_close() {
+bool GLFW_Platform::window_requested_to_close()
+{
 	return glfwWindowShouldClose(glfw_window);
 }
-
-// --------------------------------------------------------------------------------------------------------------------
 
 std::span<const char *> GLFW_Platform::get_required_extensions()
 {
@@ -110,8 +116,6 @@ void GLFW_Platform::create_surface(VkInstance instance, VkSurfaceKHR *surface)
 	glfwCreateWindowSurface(instance, glfw_window, nullptr, surface);
 }
 
-// --------------------------------------------------------------------------------------------------------------------
-
 void GLFW_Platform::imgui_init()
 {
 	ImGui_ImplGlfw_InitForVulkan(glfw_window, true);
@@ -127,23 +131,22 @@ void GLFW_Platform::imgui_shutdown()
 	ImGui_ImplGlfw_Shutdown();
 }
 
-// --------------------------------------------------------------------------------------------------------------------
+#define TRANSLATE_KEY(INPUT_KEY, GLFW_KEY) input->buttons_states[Button::INPUT_KEY] = \
+	glfwGetKey(glfw_window, GLFW_KEY) == GLFW_PRESS ? Button_State::PRESSED : Button_State::RELEASED;
 
-#define TRANSLATE_KEY(INPUT_KEY, GLFW_KEY) input->buttons_states[Input::Button::INPUT_KEY] = \
-	glfwGetKey(glfw_window, GLFW_KEY) == GLFW_PRESS ? Input::Button_State::PRESSED : Input::Button_State::RELEASED;
+#define TRANSLATE_MOUSE_BUTTON(INPUT_KEY, GLFW_KEY) input->buttons_states[Button::INPUT_KEY] = \
+	glfwGetMouseButton(glfw_window, GLFW_KEY) == GLFW_PRESS                                    \
+	? Button_State::PRESSED : Button_State::RELEASED;
 
-#define TRANSLATE_MOUSE_BUTTON(INPUT_KEY, GLFW_KEY) input->buttons_states[Input::Button::INPUT_KEY] = \
-	glfwGetMouseButton(glfw_window, GLFW_KEY) == GLFW_PRESS                                           \
-	? Input::Button_State::PRESSED : Input::Button_State::RELEASED;
-
-void GLFW_Platform::fill_input(Input *input) {
+void GLFW_Platform::fill_input()
+{
 	TRANSLATE_MOUSE_BUTTON(MOUSE_BUTTON_LEFT,       GLFW_MOUSE_BUTTON_1);
 	TRANSLATE_MOUSE_BUTTON(MOUSE_BUTTON_RIGHT,      GLFW_MOUSE_BUTTON_2);
 	TRANSLATE_MOUSE_BUTTON(MOUSE_BUTTON_MIDDLE,     GLFW_MOUSE_BUTTON_3);
 	TRANSLATE_MOUSE_BUTTON(MOUSE_BUTTON_THUMB_UP,   GLFW_MOUSE_BUTTON_4);
 	TRANSLATE_MOUSE_BUTTON(MOUSE_BUTTON_THUMB_DOWN, GLFW_MOUSE_BUTTON_5);
 
-	TRANSLATE_KEY(KEYBOARD_BUTTON_UP,            GLFW_KEY_UP);
+	TRANSLATE_KEY(KEYBOARD_BUTTON_UP,            GLFW_KEY_UP)
 	TRANSLATE_KEY(KEYBOARD_BUTTON_DOWN,          GLFW_KEY_DOWN);
 	TRANSLATE_KEY(KEYBOARD_BUTTON_LEFT,          GLFW_KEY_LEFT);
 	TRANSLATE_KEY(KEYBOARD_BUTTON_RIGHT,         GLFW_KEY_RIGHT);
@@ -223,20 +226,15 @@ void GLFW_Platform::fill_input(Input *input) {
 	}
 }
 
-// --------------------------------------------------------------------------------------------------------------------
-
-auto main() -> int32_t
+int32_t main()
 {
-	if(!glfwInit())
+	if (!glfwInit())
 	{
 		throw std::runtime_error("GLFW Could not be initialized!");
 	}
 
-	auto platform = new GLFW_Platform();
-
-	App *app;
-	app = new App(platform);
-	app->entry();
+	auto p_platform = new GLFW_Platform();
+	application_entry(p_platform);
 
 	glfwTerminate();
 	return 0;

@@ -9,9 +9,13 @@ set(CMAKE_CXX_STANDARD 20)
 
 set(SRCS
 		src/glfw_platform.cpp
-		src/app.h
-		src/app.cpp
-		src/implementations.cpp)
+		src/application.cpp
+		src/implementations.cpp
+		src/hot_reload.cpp
+		src/vulkan_utilities.cpp
+        src/gfx_context.cpp
+        src/renderer.cpp
+		)
 
 set(SHADERS_SRCS
 		src/shaders/triangle_frag.glsl
