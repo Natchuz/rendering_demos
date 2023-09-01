@@ -403,6 +403,7 @@ void create_device()
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.pNext = &device_13_features,
 		.descriptorBindingVariableDescriptorCount = true,
+		.timelineSemaphore = true,
 	};
 
 	VkPhysicalDeviceFeatures device_core_features = {

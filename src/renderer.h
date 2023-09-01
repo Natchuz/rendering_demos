@@ -42,10 +42,6 @@ struct Frame_Data
 	VkCommandBuffer draw_command_buffer;
 
 	VkSemaphore acquire_semaphore; // Swapchain image_handle acquire event
-	VkSemaphore render_semaphore;  // Same as fence below. Presentation event waits on it
-	VkFence     render_fence;      // Will be signaled once all rendering operations for this frame are done
-	VkSemaphore upload_semaphore;  // Signal finishing of upload operation
-	VkFence     upload_fence;      // Same as above
 
 	AllocatedBuffer staging_buffer; // Staging buffer that will update other buffers with changed data
 	void*           staging_buffer_ptr;
@@ -84,6 +80,11 @@ struct Renderer
 
 	VkPipelineLayout pipeline_layout;
 	VkPipeline       pipeline;
+
+	// Major stages of rendering a frame are controlled by timeline semaphores with value of frame number
+	// adjusted to avoid having to account for first few frames
+	VkSemaphore  upload_semaphore;
+	VkSemaphore  render_semaphore;
 };
 
 inline Renderer* renderer;

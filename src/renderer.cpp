@@ -21,6 +21,8 @@ void renderer_create_shaders();
 void renderer_destroy_shaders();
 void renderer_create_pipeline();
 void renderer_destroy_pipeline();
+void renderer_create_sync_primitives();
+void renderer_destroy_sync_primitives();
 
 void texture_manager_init()
 {
@@ -44,10 +46,12 @@ void renderer_init()
 	renderer_create_descriptors();
 	renderer_create_shaders();
 	renderer_create_pipeline();
+	renderer_create_sync_primitives();
 }
 
 void renderer_deinit()
 {
+	renderer_destroy_sync_primitives();
 	renderer_destroy_pipeline();
 	renderer_destroy_shaders();
 	renderer_destroy_descriptors();
@@ -190,16 +194,7 @@ void renderer_create_frame_data()
 			auto frame_data = &renderer->frame_data[frame_i]; // Shortcut
 
 			vkCreateSemaphore(gfx_context->device, &semaphore_create_info, nullptr, &frame_data->acquire_semaphore);
-			vkCreateSemaphore(gfx_context->device, &semaphore_create_info, nullptr, &frame_data->render_semaphore);
-			vkCreateFence(gfx_context->device, &fence_create_info, nullptr, &frame_data->render_fence);
-			vkCreateSemaphore(gfx_context->device, &semaphore_create_info, nullptr, &frame_data->upload_semaphore);
-			vkCreateFence(gfx_context->device, &fence_create_info, nullptr, &frame_data->upload_fence);
-
 			name_object(frame_data->acquire_semaphore, "Present semaphore (frame {})", frame_i);
-			name_object(frame_data->render_semaphore,"Render semaphore (frame {})", frame_i);
-			name_object(frame_data->render_fence,"Render fence (frame {})", frame_i);
-			name_object(frame_data->upload_semaphore,"Upload semaphore (frame {})", frame_i);
-			name_object(frame_data->upload_fence,"Upload fence (frame {})", frame_i);
 		}
 	}
 
@@ -250,10 +245,6 @@ void renderer_destroy_frame_data()
 	for (int frame_i=0; frame_i < renderer->buffering; frame_i++)
 	{
 		vkDestroySemaphore(gfx_context->device, renderer->frame_data[frame_i].acquire_semaphore, nullptr);
-		vkDestroySemaphore(gfx_context->device, renderer->frame_data[frame_i].render_semaphore, nullptr);
-		vkDestroyFence(gfx_context->device, renderer->frame_data[frame_i].render_fence, nullptr);
-		vkDestroySemaphore(gfx_context->device, renderer->frame_data[frame_i].upload_semaphore, nullptr);
-		vkDestroyFence(gfx_context->device, renderer->frame_data[frame_i].upload_fence, nullptr);
 	}
 
 	// Command buffers
@@ -839,21 +830,53 @@ void renderer_destroy_pipeline()
 	ZoneScopedN("Pipeline destruction");
 }
 
+void renderer_create_sync_primitives()
+{
+	ZoneScopedN("Synchronization primitives creation");
+
+	VkSemaphoreTypeCreateInfo semaphore_type_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+		.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+		.initialValue  = renderer->buffering - 1,
+	};
+
+	VkSemaphoreCreateInfo semaphore_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+		.pNext = &semaphore_type_create_info,
+		.flags = 0,
+	};
+
+	vkCreateSemaphore(gfx_context->device, &semaphore_create_info, nullptr, &renderer->upload_semaphore);
+	vkCreateSemaphore(gfx_context->device, &semaphore_create_info, nullptr, &renderer->render_semaphore);
+	name_object(renderer->upload_semaphore, "Upload timeline semaphore");
+	name_object(renderer->render_semaphore, "Render timeline semaphore");
+}
+
+void renderer_destroy_sync_primitives()
+{
+	ZoneScopedN("Synchronization primitives destruction");
+}
+
 void renderer_dispatch()
 {
 	ZoneScopedN("Renderer dispatch");
 
 	auto frame_i = app->frame_number % renderer->buffering;
 	auto current_frame = &renderer->frame_data[frame_i];
-	auto previous_frame = &renderer->frame_data[(app->frame_number - 1) % renderer->buffering];
+	auto timeline_i = frame_i + renderer->buffering; // Frame id adjusted to avoid negative value issues
 
 	// Await same frame's previous upload fence
 	{
-		if (app->frame_number >= renderer->buffering)
-		{
-			vkWaitForFences(gfx_context->device, 1, &current_frame->upload_fence, true, UINT64_MAX);
-		}
-		vkResetFences(gfx_context->device, 1, &current_frame->upload_fence);
+		ZoneScopedN("Waiting on previous upload");
+
+		uint64_t semaphore_await_value = timeline_i - renderer->buffering;
+		VkSemaphoreWaitInfo wait_info = {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+			.semaphoreCount = 1,
+			.pSemaphores    = &renderer->upload_semaphore,
+			.pValues        = &semaphore_await_value,
+		};
+		vkWaitSemaphores(gfx_context->device, &wait_info, UINT64_MAX);
 	}
 
 	char* staging_buffer_ptr = static_cast<char *>(current_frame->staging_buffer_ptr);
@@ -985,33 +1008,49 @@ void renderer_dispatch()
 	{
 		ZoneScopedN("Submit staging buffer");
 
-		//VkPipelineStageFlags dst_stage_mask[1] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-		VkPipelineStageFlags dst_stage_mask[1] = { VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT };
-		VkSubmitInfo submit_info = {
-			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-			//.waitSemaphoreCount = 1,
-			//.pWaitSemaphores = &acquire_semaphore[index],
-			//.pWaitDstStageMask = dst_stage_mask,
-			.waitSemaphoreCount   = (app->frame_number >= renderer->buffering) ? 1ul : 0ul, // Don't wait on first frames
-			.pWaitSemaphores      = &current_frame->render_semaphore,
-			.pWaitDstStageMask    = dst_stage_mask,
-			.commandBufferCount   = 1,
-			.pCommandBuffers      = &current_frame->upload_command_buffer,
-			.signalSemaphoreCount = 1,
-			.pSignalSemaphores    = &current_frame->upload_semaphore,
+		VkSemaphoreSubmitInfo wait_info = {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+			.semaphore = renderer->upload_semaphore,
+			.value     = timeline_i - renderer->buffering,
+			.stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 		};
-		vkQueueSubmit(gfx_context->gfx_queue, 1, &submit_info, current_frame->upload_fence);
+
+		VkCommandBufferSubmitInfo command_buffer_submit_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+			.commandBuffer = current_frame->upload_command_buffer,
+		};
+
+		VkSemaphoreSubmitInfo signal_info = {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+			.semaphore = renderer->upload_semaphore,
+			.value     = timeline_i,
+			.stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+		};
+
+		VkSubmitInfo2 submit_info = {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.waitSemaphoreInfoCount   = 1,
+			.pWaitSemaphoreInfos      = &wait_info,
+			.commandBufferInfoCount   = 1,
+			.pCommandBufferInfos      = &command_buffer_submit_info,
+			.signalSemaphoreInfoCount = 1,
+			.pSignalSemaphoreInfos    = &signal_info,
+		};
+		vkQueueSubmit2(gfx_context->gfx_queue, 1, &submit_info, VK_NULL_HANDLE);
 	}
 
 	// Await same frame's previous render fence
 	{
 		ZoneScopedN("Waiting on render");
 
-		if (app->frame_number >= renderer->buffering)
-		{
-			vkWaitForFences(gfx_context->device, 1, &current_frame->render_fence, true, UINT64_MAX);
-		}
-		vkResetFences(gfx_context->device, 1, &current_frame->render_fence);
+		uint64_t semaphore_await_value = timeline_i - renderer->buffering;
+		VkSemaphoreWaitInfo wait_info = {
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+			.semaphoreCount = 1,
+			.pSemaphores    = &renderer->render_semaphore,
+			.pValues        = &semaphore_await_value,
+		};
+		vkWaitSemaphores(gfx_context->device, &wait_info, UINT64_MAX);
 	}
 
 	// Acquire swapchain image_handle and recreate swapchain if necessary
@@ -1048,8 +1087,8 @@ void renderer_dispatch()
 
 				// FIXME: Following unfortunately will result in validation error, since present semaphore isn't
 				// being "reset" on swapchain destroy.
-				vkAcquireNextImageKHR(gfx_context->device, gfx_context->swapchain.handle, UINT64_MAX, current_frame->acquire_semaphore,
-									  VK_NULL_HANDLE, &swapchain_image_index);
+				vkAcquireNextImageKHR(gfx_context->device, gfx_context->swapchain.handle, UINT64_MAX,
+									  current_frame->acquire_semaphore, VK_NULL_HANDLE, &swapchain_image_index);
 				swapchain_image = gfx_context->swapchain.images[swapchain_image_index];
 			}
 		}
@@ -1252,20 +1291,49 @@ void renderer_dispatch()
 	{
 		ZoneScopedN("Submit draw");
 
-		VkPipelineStageFlags dst_stage_mask[] = {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-												 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}; // Transfer works too, not sure why
-		VkSemaphore wait_semaphores[] = {current_frame->acquire_semaphore, current_frame->upload_semaphore};
-		VkSubmitInfo submit_info = {
-			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-			.waitSemaphoreCount = 2,
-			.pWaitSemaphores = wait_semaphores,
-			.pWaitDstStageMask = dst_stage_mask,
-			.commandBufferCount = 1,
-			.pCommandBuffers = &current_frame->draw_command_buffer,
-			.signalSemaphoreCount = 1,
-			.pSignalSemaphores = &current_frame->render_semaphore,
+		VkSemaphoreSubmitInfo wait_info[] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+				.semaphore = current_frame->acquire_semaphore,
+				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+				.semaphore = renderer->upload_semaphore,
+				.value     = timeline_i - renderer->buffering,
+				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			},
 		};
-		vkQueueSubmit(gfx_context->gfx_queue, 1, &submit_info, current_frame->render_fence);
+
+		VkCommandBufferSubmitInfo command_buffer_submit_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+			.commandBuffer = current_frame->draw_command_buffer,
+		};
+
+		VkSemaphoreSubmitInfo signal_info[] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+				.semaphore = current_frame->acquire_semaphore,
+				.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+				.semaphore = renderer->render_semaphore,
+				.value     = timeline_i,
+				.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+			},
+		};
+
+		VkSubmitInfo2 submit_info = {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.waitSemaphoreInfoCount   = 2,
+			.pWaitSemaphoreInfos      = wait_info,
+			.commandBufferInfoCount   = 1,
+			.pCommandBufferInfos      = &command_buffer_submit_info,
+			.signalSemaphoreInfoCount = 2,
+			.pSignalSemaphoreInfos    = signal_info,
+		};
+		vkQueueSubmit2(gfx_context->gfx_queue, 1, &submit_info, VK_NULL_HANDLE);
 	}
 
 	{
@@ -1274,7 +1342,7 @@ void renderer_dispatch()
 		VkPresentInfoKHR present_info = {
 			.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 			.waitSemaphoreCount = 1,
-			.pWaitSemaphores    = &current_frame->render_semaphore,
+			.pWaitSemaphores    = &current_frame->acquire_semaphore,
 			.swapchainCount     = 1,
 			.pSwapchains        = &gfx_context->swapchain.handle,
 			.pImageIndices      = &swapchain_image_index,
