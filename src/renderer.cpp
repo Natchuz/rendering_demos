@@ -51,6 +51,8 @@ void renderer_init()
 
 void renderer_deinit()
 {
+	vkDeviceWaitIdle(gfx_context->device);
+
 	renderer_destroy_sync_primitives();
 	renderer_destroy_pipeline();
 	renderer_destroy_shaders();
@@ -259,7 +261,6 @@ void renderer_destroy_frame_data()
 	// Command pools
 	for (int frame_i=0; frame_i < renderer->buffering; frame_i++)
 	{
-		vkDestroyCommandPool(gfx_context->device, renderer->frame_data[frame_i].command_pool, nullptr);
 		vkDestroyCommandPool(gfx_context->device, renderer->frame_data[frame_i].command_pool, nullptr);
 	}
 }
@@ -863,13 +864,17 @@ void renderer_dispatch()
 
 	auto frame_i = app->frame_number % renderer->buffering;
 	auto current_frame = &renderer->frame_data[frame_i];
-	auto timeline_i = frame_i + renderer->buffering; // Frame id adjusted to avoid negative value issues
+
+	// Use the latter to refer to current frame in timeline semaphores. Use first to refer to the same frame,
+	// but renderer->buffering frames ago.
+	auto previous_timeline_frame_i = app->frame_number;
+	auto current_timeline_frame_i = app->frame_number + renderer->buffering;
 
 	// Await same frame's previous upload fence
 	{
 		ZoneScopedN("Waiting on previous upload");
 
-		uint64_t semaphore_await_value = timeline_i - renderer->buffering;
+		uint64_t semaphore_await_value = previous_timeline_frame_i;
 		VkSemaphoreWaitInfo wait_info = {
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
 			.semaphoreCount = 1,
@@ -1011,7 +1016,7 @@ void renderer_dispatch()
 		VkSemaphoreSubmitInfo wait_info = {
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 			.semaphore = renderer->upload_semaphore,
-			.value     = timeline_i - renderer->buffering,
+			.value     = previous_timeline_frame_i,
 			.stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 		};
 
@@ -1023,12 +1028,12 @@ void renderer_dispatch()
 		VkSemaphoreSubmitInfo signal_info = {
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 			.semaphore = renderer->upload_semaphore,
-			.value     = timeline_i,
+			.value     = current_timeline_frame_i,
 			.stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
 		};
 
 		VkSubmitInfo2 submit_info = {
-			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
 			.waitSemaphoreInfoCount   = 1,
 			.pWaitSemaphoreInfos      = &wait_info,
 			.commandBufferInfoCount   = 1,
@@ -1043,7 +1048,7 @@ void renderer_dispatch()
 	{
 		ZoneScopedN("Waiting on render");
 
-		uint64_t semaphore_await_value = timeline_i - renderer->buffering;
+		uint64_t semaphore_await_value = previous_timeline_frame_i;
 		VkSemaphoreWaitInfo wait_info = {
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
 			.semaphoreCount = 1,
@@ -1300,7 +1305,7 @@ void renderer_dispatch()
 			{
 				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 				.semaphore = renderer->upload_semaphore,
-				.value     = timeline_i - renderer->buffering,
+				.value     = previous_timeline_frame_i,
 				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 			},
 		};
@@ -1319,13 +1324,13 @@ void renderer_dispatch()
 			{
 				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 				.semaphore = renderer->render_semaphore,
-				.value     = timeline_i,
+				.value     = current_timeline_frame_i,
 				.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
 			},
 		};
 
 		VkSubmitInfo2 submit_info = {
-			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
 			.waitSemaphoreInfoCount   = 2,
 			.pWaitSemaphoreInfos      = wait_info,
 			.commandBufferInfoCount   = 1,
