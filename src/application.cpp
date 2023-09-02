@@ -14,6 +14,10 @@
 #include <imgui/imgui.h>
 #include <imgui/backends/imgui_impl_vulkan.h>
 
+// Private functions
+void build_ui();
+void build_info_window();
+
 void application_entry(Platform* p_platform)
 {
 	spdlog::info("Rendering demos startup");
@@ -45,7 +49,7 @@ void application_entry(Platform* p_platform)
 		imgui_new_frame();
 
 		camera_update();
-		hot_reload_build_ui();
+		build_ui();
 
 		renderer_dispatch();
 
@@ -63,6 +67,35 @@ void application_entry(Platform* p_platform)
 
 	p_platform->window_destroy();
 	hot_reload_close();
+}
+
+void build_ui()
+{
+	if (ImGui::BeginMainMenuBar())
+	{
+		if (ImGui::BeginMenu("App"))
+		{
+			ImGui::MenuItem("Info", nullptr, &app->ui.windows.info);
+			ImGui::Separator();
+			ImGui::MenuItem("Hot reload", nullptr, &app->ui.windows.hot_reload);
+			ImGui::MenuItem("Camera", nullptr, &app->ui.windows.camera);
+			ImGui::EndMenu();
+		}
+		ImGui::EndMainMenuBar();
+	}
+
+	if (app->ui.windows.info)       build_info_window();
+	if (app->ui.windows.hot_reload) hot_reload_build_ui();
+	if (app->ui.windows.camera)     camera_build_ui();
+}
+
+void build_info_window()
+{
+	ImGui::Begin("Info", &app->ui.windows.info);
+	{
+		ImGui::Text("Info");
+	}
+	ImGui::End();
 }
 
 void timings_new_frame()
@@ -222,23 +255,6 @@ void camera_update()
 	// FIXME: this camera works... but there are many inconsistencies with system handedness
 	// that should be fixed ASAP as I have a feeling that bumping into them will be very common
 
-	ImGui::Begin("Camera");
-	ImGui::Text("Yaw: %f", camera->yaw);
-	ImGui::Text("Pitch: %f", camera->pitch);
-	ImGui::Text("Front: %f %f %f", camera->front.x, camera->front.y, camera->front.z);
-	ImGui::Text("Up: %f %f %f", camera->up.x, camera->up.y, camera->up.z);
-	ImGui::Text("Right: %f %f %f", camera->right.x, camera->right.y, camera->right.z);
-	ImGui::DragFloat3("Position:", glm::value_ptr(camera->position), 0.1, -100, 100);
-	ImGui::DragFloat("Mouse sens:", &camera->mouse_sensitivity, 0.005, 0.001, 1);
-	ImGui::DragFloat("Camera speed:", &camera->velocity, 0.005, 0.001, 50);
-	ImGui::DragFloat("Fast multiplier:", &camera->speed_multiplier, 0.005, 1, 10);
-	ImGui::Text("dx: %f  dy: %f", input->mouse_x_delta, input->mouse_y_delta);
-	if (input->buttons_states[Button::KEYBOARD_BUTTON_LEFT_SHIFT])
-	{
-		ImGui::Text("SHIFT");
-	}
-	ImGui::End();
-
 	// Focus window
 	if (input->buttons_states[Button::MOUSE_BUTTON_RIGHT] == Button_State::PRESSED && !ImGui::GetIO().WantCaptureMouse)
 	{
@@ -284,4 +300,24 @@ void camera_update()
 glm::mat4x4 camera_get_view_matrix()
 {
 	return glm::lookAt(camera->position, camera->position + camera->front, camera->up);
+}
+
+void camera_build_ui()
+{
+	ImGui::Begin("Camera");
+	ImGui::Text("Yaw: %f", camera->yaw);
+	ImGui::Text("Pitch: %f", camera->pitch);
+	ImGui::Text("Front: %f %f %f", camera->front.x, camera->front.y, camera->front.z);
+	ImGui::Text("Up: %f %f %f", camera->up.x, camera->up.y, camera->up.z);
+	ImGui::Text("Right: %f %f %f", camera->right.x, camera->right.y, camera->right.z);
+	ImGui::DragFloat3("Position:", glm::value_ptr(camera->position), 0.1, -100, 100);
+	ImGui::DragFloat("Mouse sens:", &camera->mouse_sensitivity, 0.005, 0.001, 1);
+	ImGui::DragFloat("Camera speed:", &camera->velocity, 0.005, 0.001, 50);
+	ImGui::DragFloat("Fast multiplier:", &camera->speed_multiplier, 0.005, 1, 10);
+	ImGui::Text("dx: %f  dy: %f", input->mouse_x_delta, input->mouse_y_delta);
+	if (input->buttons_states[Button::KEYBOARD_BUTTON_LEFT_SHIFT])
+	{
+		ImGui::Text("SHIFT");
+	}
+	ImGui::End();
 }

@@ -25,6 +25,7 @@ void camera_init();
 void camera_deinit();
 void camera_update();
 glm::mat4x4 camera_get_view_matrix();
+void camera_build_ui();
 
 struct ImGui_Data
 {
@@ -51,9 +52,17 @@ void timings_new_frame();
 
 struct Application
 {
-	float rotation = 0;
+	struct Dev_Menu
+	{
+		struct Windows
+		{
+			bool info       = false;
+			bool hot_reload = true;
+			bool camera     = true;
+		} windows = {};
+	} ui = {};
 
-	uint64_t frame_number;
+	uint64_t frame_number = 0;
 };
 
 inline Application* app;
