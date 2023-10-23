@@ -5,9 +5,6 @@
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
 
-#define TINYOBJLOADER_IMPLEMENTATION
-#include <tiny_obj_loader.h>
-
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
