@@ -9,6 +9,8 @@ layout (set = 0, binding = 1) uniform sampler2D textures[];
 
 void main()
 {
-	vec3 color = texture(textures[0], in_uv).xyz;
-	out_color = vec4(color, 1.0f);
+	//vec3 color = texture(textures[0], in_uv).xyz;
+	//out_color = vec4(color, 1.0f);
+
+	out_color = vec4(in_normal, 1.0f);
 }

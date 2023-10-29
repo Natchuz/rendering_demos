@@ -2,10 +2,78 @@
 
 #include "gfx_context.h"
 
+#include <map>
 #include <deque>
 #include <stb_image.h>
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
+
+/// Helper class
+struct Mapped_Buffer_Writer
+{
+	uint8_t* base_ptr;
+	uint8_t* offset_ptr;
+
+	explicit Mapped_Buffer_Writer(void* mapped_buffer_ptr);
+
+	[[nodiscard]] size_t offset() const;
+
+	void advance(size_t size);
+
+	void write(const void* data, size_t size);
+};
+
+void flush_buffer_writer(Mapped_Buffer_Writer& writer, VmaAllocator vma_allocator, VmaAllocation vma_allocation);
+
+// Meshes are stored in interleaved format, all in one buffer
+// TODO-FUTURE: separate position and properties stream (faster z rendering).
+struct Mesh_Manager
+{
+	typedef uint32_t Id;
+
+	// TODO should we separate these into two objects? (we only need indices for rendering - better cache utilization)
+	struct Mesh_Description
+	{
+		VkDeviceSize vertex_offset;
+		uint32_t     vertex_count;
+		VkDeviceSize indices_offset;
+		uint32_t     indices_count;
+		VmaVirtualAllocation vertex_allocation;
+		VmaVirtualAllocation indices_allocation;
+	};
+
+	struct Mesh_Upload
+	{
+		Id       id;
+		void*    ptr;
+		uint32_t size;
+	};
+
+	AllocatedBuffer vertex_buffer;
+	AllocatedBuffer indices_buffer;
+	VmaVirtualBlock vertex_sub_allocator;
+	VmaVirtualBlock indices_sub_allocator;
+
+	Id next_index;
+	std::map<Id, Mesh_Description> meshes;
+
+	inline Mesh_Description& get_mesh(Id id) { return meshes[id]; }
+};
+
+inline Mesh_Manager* mesh_manager;
+
+struct Render_Object
+{
+	Mesh_Manager::Id mesh_id;
+	glm::mat4        transform;
+};
+
+struct Scene_Data
+{
+	std::vector<Render_Object> render_objects;
+};
+
+inline Scene_Data* scene_data;
 
 // This one is intended for managing bindless sampled textures/images
 struct Texture_Manager
@@ -63,10 +131,6 @@ struct Renderer
 	Buffering_Type          buffering;
 	std::vector<Frame_Data> frame_data;
 
-	AllocatedBuffer vertex_buffer;
-	void*           vertex_buffer_ptr;
-	uint32_t        vertices_count;
-
 	AllocatedBuffer per_frame_data_buffer;
 
 	Allocated_View_Image depth_buffer;
@@ -85,6 +149,14 @@ struct Renderer
 	// adjusted to avoid having to account for first few frames
 	VkSemaphore  upload_semaphore;
 	VkSemaphore  render_semaphore;
+
+	// Command pool associated with main upload heap - all operations on main upload heap are device-blocking,
+	// so we can create command buffers on per-upload basic and reset it at once. This will be changed in future
+	// by adding proper streaming support.
+	VkCommandPool   upload_command_pool;
+	VkCommandBuffer upload_command_buffer;
+	AllocatedBuffer main_upload_heap;
+	void*           main_upload_heap_ptr;
 };
 
 inline Renderer* renderer;

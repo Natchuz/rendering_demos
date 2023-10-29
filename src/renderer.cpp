@@ -5,7 +5,9 @@
 #include "vulkan_utilities.h"
 
 #include <fstream>
-#include <tiny_obj_loader.h>
+#include <fastgltf/parser.hpp>
+#include <fastgltf/tools.hpp>
+#include <fastgltf/glm_element_traits.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>
 #include <imgui/backends/imgui_impl_vulkan.h>
@@ -23,6 +25,109 @@ void renderer_create_pipeline();
 void renderer_destroy_pipeline();
 void renderer_create_sync_primitives();
 void renderer_destroy_sync_primitives();
+void renderer_create_upload_heap();
+void renderer_destroy_upload_heap();
+
+Mapped_Buffer_Writer::Mapped_Buffer_Writer(void* mapped_buffer_ptr)
+{
+	this->base_ptr   = static_cast<uint8_t*>(mapped_buffer_ptr);
+	this->offset_ptr = base_ptr;
+}
+
+void Mapped_Buffer_Writer::write(const void* data, size_t size)
+{
+	memcpy(offset_ptr, data, size);
+	advance(size);
+}
+
+[[nodiscard]] size_t Mapped_Buffer_Writer::offset() const
+{
+	return offset_ptr - base_ptr;
+}
+
+void Mapped_Buffer_Writer::advance(size_t size)
+{
+	offset_ptr = offset_ptr + size;
+}
+
+void flush_buffer_writer(Mapped_Buffer_Writer& writer, VmaAllocator vma_allocator, VmaAllocation vma_allocation)
+{
+	vmaFlushAllocation(gfx_context->vma_allocator, renderer->main_upload_heap.allocation, 0,
+					   writer.offset());
+}
+
+void mesh_manager_init()
+{
+	ZoneScopedN("Mesh manager initialization");
+
+	mesh_manager = new Mesh_Manager{};
+
+	// Vertex buffer
+	{
+		VkBufferCreateInfo creation_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size  = 100000,
+			.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		};
+
+		VmaAllocationCreateInfo vma_creation_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+
+		vmaCreateBuffer(gfx_context->vma_allocator,
+						&creation_info,
+						&vma_creation_info,
+						&mesh_manager->vertex_buffer.buffer,
+						&mesh_manager->vertex_buffer.allocation,
+						nullptr);
+		name_object(mesh_manager->vertex_buffer.buffer, "Vertex buffer");
+	}
+
+	// Indices buffer
+	{
+		VkBufferCreateInfo creation_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size  = 100000,
+			.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+		};
+
+		VmaAllocationCreateInfo vma_creation_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+
+		vmaCreateBuffer(gfx_context->vma_allocator,
+						&creation_info,
+						&vma_creation_info,
+						&mesh_manager->indices_buffer.buffer,
+						&mesh_manager->indices_buffer.allocation,
+						nullptr);
+		name_object(mesh_manager->indices_buffer.buffer, "Indices buffer");
+	}
+
+	// Vertex buffer suballocation
+	{
+		VmaVirtualBlockCreateInfo create_info = { .size  = 100000, .flags = 0 };
+		vmaCreateVirtualBlock(&create_info, &mesh_manager->vertex_sub_allocator);
+	}
+
+	// Indices buffer suballocation
+	{
+		VmaVirtualBlockCreateInfo create_info = { .size  = 100000, .flags = 0 };
+		vmaCreateVirtualBlock(&create_info, &mesh_manager->indices_sub_allocator);
+	}
+}
+
+void mesh_manager_deinit()
+{
+	vmaDestroyBuffer(gfx_context->vma_allocator, mesh_manager->vertex_buffer.buffer,
+					 mesh_manager->vertex_buffer.allocation);
+	vmaDestroyBuffer(gfx_context->vma_allocator, mesh_manager->indices_buffer.buffer,
+					 mesh_manager->indices_buffer.allocation);
+
+	delete mesh_manager;
+}
 
 void texture_manager_init()
 {
@@ -38,21 +143,25 @@ void renderer_init()
 {
 	renderer = new Renderer;
 
+	scene_data = new Scene_Data;
+	mesh_manager_init();
 	texture_manager_init();
 	depth_buffer_create();
 	renderer_create_frame_data();
 	renderer_create_buffers();
-	load_scene_data();
 	renderer_create_descriptors();
 	renderer_create_shaders();
 	renderer_create_pipeline();
 	renderer_create_sync_primitives();
+	renderer_create_upload_heap();
+	load_scene_data();
 }
 
 void renderer_deinit()
 {
 	vkDeviceWaitIdle(gfx_context->device);
 
+	renderer_destroy_upload_heap();
 	renderer_destroy_sync_primitives();
 	renderer_destroy_pipeline();
 	renderer_destroy_shaders();
@@ -61,6 +170,8 @@ void renderer_deinit()
 	renderer_destroy_frame_data();
 	depth_buffer_destroy();
 	texture_manager_deinit();
+	mesh_manager_deinit();
+	delete scene_data;
 
 	delete renderer;
 }
@@ -207,7 +318,7 @@ void renderer_create_frame_data()
 		VkBufferCreateInfo staging_buffer_create_info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size = 30000000, // 30 mb
-			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		};
 
 		VmaAllocationCreateInfo staging_buffer_vma_create_info = {
@@ -269,32 +380,6 @@ void renderer_create_buffers()
 {
 	ZoneScopedN("Buffers creation");
 
-	// Vertex buffer
-	{
-		ZoneScopedN("Vertex buffer creation");
-
-		VkBufferCreateInfo vertex_buffer_create_info = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size  = 100000,
-			.usage = VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-		};
-
-		VmaAllocationCreateInfo vma_vertex_buffer_create_info = {
-			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-			.usage = VMA_MEMORY_USAGE_AUTO,
-		};
-
-		vmaCreateBuffer(gfx_context->vma_allocator,
-						&vertex_buffer_create_info,
-						&vma_vertex_buffer_create_info,
-						&renderer->vertex_buffer.buffer,
-						&renderer->vertex_buffer.allocation,
-						nullptr);
-		vmaMapMemory(gfx_context->vma_allocator, renderer->vertex_buffer.allocation, &renderer->vertex_buffer_ptr);
-
-		name_object(renderer->vertex_buffer.buffer, "Vertex buffer");
-	}
-
 	// Uniform buffer
 	{
 		ZoneScopedN("Uniform buffer creation");
@@ -345,145 +430,6 @@ std::vector<uint8_t> load_file(const char* file_path)
 	file.close();
 
 	return buffer;
-}
-
-void load_scene_data()
-{
-	ZoneScopedN("Loading scene data");
-
-	tinyobj::attrib_t attrib;
-	std::vector<tinyobj::shape_t> shapes;
-	std::vector<tinyobj::material_t> materials;
-	std::string warn, err;
-	auto filename = "assets/colored_suzanne/suzanne.obj";
-
-	tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, filename);
-
-	if (!warn.empty())
-	{
-		spdlog::warn(warn);
-	}
-
-	if (!err.empty())
-	{
-		throw std::runtime_error(err);
-	}
-
-	std::vector<float> vertex_data = {};
-	renderer->vertices_count = 0;
-
-	for (auto &shape : shapes)
-	{
-		size_t index_offset = 0;
-
-		for (size_t face = 0; face < shape.mesh.num_face_vertices.size(); face++)
-		{
-			for (size_t vert = 0; vert < 3; vert++)
-			{
-				tinyobj::index_t idx = shape.mesh.indices[index_offset + vert];
-
-				tinyobj::real_t vx = attrib.vertices[3 * idx.vertex_index + 0];
-				tinyobj::real_t vy = attrib.vertices[3 * idx.vertex_index + 1];
-				tinyobj::real_t vz = attrib.vertices[3 * idx.vertex_index + 2];
-				tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
-				tinyobj::real_t ny = attrib.normals[3 * idx.normal_index + 1];
-				tinyobj::real_t nz = attrib.normals[3 * idx.normal_index + 2];
-				tinyobj::real_t u  = attrib.texcoords[2 * idx.texcoord_index + 0];
-				tinyobj::real_t v  = attrib.texcoords[2 * idx.texcoord_index + 1];
-
-				vertex_data.insert(vertex_data.end(), {vx, vy, vz, nx, ny, nz, u, 1-v}); // Vulkan UV fix
-				renderer->vertices_count += 1;
-			}
-
-			index_offset += 3;
-		}
-	}
-
-	spdlog::info("Loaded object, with {} vertices ({} bytes)", renderer->vertices_count, vertex_data.size() * sizeof(float));
-	memcpy(renderer->vertex_buffer_ptr, vertex_data.data(), vertex_data.size() * sizeof(float));
-	vmaFlushAllocation(gfx_context->vma_allocator, renderer->vertex_buffer.allocation, 0, vertex_data.size() * sizeof(float));
-
-	// Texture
-
-	auto texture = load_file("assets/colored_suzanne/ColorTexture.png");
-	int32_t width, height, channels;
-	auto pixels = stbi_load_from_memory(texture.data(), texture.size(), &width, &height, &channels, STBI_rgb_alpha);
-
-	VkImageCreateInfo image_create_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_R8G8B8A8_SRGB,
-		.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1},
-		.mipLevels = 1,
-		.arrayLayers = 1,
-		.samples = VK_SAMPLE_COUNT_1_BIT,
-		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-	};
-
-	VmaAllocationCreateInfo allocation_create_info = {
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-	};
-
-	AllocatedImage image = {};
-	VmaAllocationInfo allocation_info;
-	vmaCreateImage(gfx_context->vma_allocator, &image_create_info, &allocation_create_info,
-				   &image.handle, &image.allocation, &allocation_info);
-	name_object(image.handle, "Color texture");
-
-	VkImageViewCreateInfo image_view_create_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-		.image = image.handle,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = VK_FORMAT_R8G8B8A8_SRGB,
-		.components = {
-			.r = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.g = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.b = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.a = VK_COMPONENT_SWIZZLE_IDENTITY,
-		},
-		.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = 1,
-			.baseArrayLayer = 0,
-			.layerCount = 1,
-		},
-	};
-	VkImageView image_view;
-	vkCreateImageView(gfx_context->device, &image_view_create_info, nullptr, &image_view);
-
-	VkSamplerCreateInfo sampler_create_info = {
-		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-		.magFilter = VK_FILTER_LINEAR,
-		.minFilter = VK_FILTER_LINEAR,
-		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.mipLodBias = 0,
-		.anisotropyEnable = false,
-		.maxAnisotropy = 16,
-		.compareEnable = false,
-		.compareOp = VK_COMPARE_OP_NEVER,
-		.borderColor = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
-		.unnormalizedCoordinates = false,
-	};
-	VkSampler sampler;
-	vkCreateSampler(gfx_context->device, &sampler_create_info, nullptr, &sampler);
-
-	texture_manager->bindings.push_back({
-											   .image = image,
-											   .view = image_view,
-											   .sampler = sampler,
-										   });
-	texture_manager->upload_queue.push_back({
-											 .pixels = pixels,
-											 .image_size = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) },
-											 .image_handle = static_cast<Texture_Manager::Texture_Handle>(texture_manager->bindings.size() - 1),
-										 });
 }
 
 void renderer_create_descriptors()
@@ -581,46 +527,6 @@ void renderer_create_descriptors()
 								 &renderer->per_frame_descriptor_set);
 		name_object(renderer->per_frame_descriptor_set, "per_frame_descriptor_set");
 	}
-
-	// Temporary write to descriptor
-	{
-		ZoneScopedN("Temporary write to descriptor");
-
-		VkDescriptorBufferInfo descriptor_buffer_info = {
-			.buffer = renderer->per_frame_data_buffer.buffer,
-			.offset = 0,
-			.range  = sizeof(Frame_Uniform_Data),
-		};
-
-		VkDescriptorImageInfo image_info = {
-			.sampler     = texture_manager->bindings[0].sampler,
-			.imageView   = texture_manager->bindings[0].view,
-			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		};
-
-		VkWriteDescriptorSet descriptor_set_writes[] = {
-			{
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = renderer->per_frame_descriptor_set,
-				.dstBinding = 0,
-				.dstArrayElement = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-				.pBufferInfo = &descriptor_buffer_info,
-			},
-			{
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = renderer->per_frame_descriptor_set,
-				.dstBinding = 1,
-				.dstArrayElement = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.pImageInfo = &image_info,
-			}
-		};
-
-		vkUpdateDescriptorSets(gfx_context->device, 2, descriptor_set_writes, 0, nullptr);
-	}
 }
 
 void renderer_destroy_descriptors()
@@ -665,11 +571,19 @@ void renderer_create_pipeline()
 	{
 		ZoneScopedN("Pipeline layout creation");
 
+		VkPushConstantRange push_constant_range = {
+			.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
+			.offset     = 0,
+			.size       = 16 * sizeof(float),
+		};
+
 		VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 			.flags = 0,
 			.setLayoutCount = 1,
-			.pSetLayouts = &renderer->per_frame_descriptor_set_layout,
+			.pSetLayouts    = &renderer->per_frame_descriptor_set_layout,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges    = &push_constant_range,
 		};
 		vkCreatePipelineLayout(gfx_context->device, &pipeline_layout_create_info, nullptr, &renderer->pipeline_layout);
 		name_object(renderer->pipeline_layout, "Pipeline layout");
@@ -693,38 +607,42 @@ void renderer_create_pipeline()
 
 		VkVertexInputBindingDescription binding_description = {
 			.binding   = 0,
-			.stride    = 8 * sizeof(float),
+			.stride    = 12 * sizeof(float),
 			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
 		};
 
-		VkVertexInputAttributeDescription vertex_attributes[3];
-
-		vertex_attributes[0] = { // Position attribute
-			.location = 0,
-			.binding  = 0,
-			.format   = VK_FORMAT_R32G32B32_SFLOAT,
-			.offset   = 0,
-		};
-
-		vertex_attributes[1] = { // Normal attribute
-			.location = 1,
-			.binding  = 0,
-			.format   = VK_FORMAT_R32G32B32_SFLOAT,
-			.offset   = 3 * sizeof(float),
-		};
-
-		vertex_attributes[2] = { // UV attribute
-			.location = 2,
-			.binding  = 0,
-			.format   = VK_FORMAT_R32G32_SFLOAT,
-			.offset   = 6 * sizeof(float),
+		VkVertexInputAttributeDescription vertex_attributes[] = {
+			{ // Position attribute
+				.location = 0,
+				.binding  = 0,
+				.format   = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset   = 0,
+			},
+			{ // Normal attribute
+				.location = 1,
+				.binding  = 0,
+				.format   = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset   = 3 * sizeof(float),
+			},
+			{ // Tangents attribute
+				.location = 2,
+				.binding  = 0,
+				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
+				.offset   = 6 * sizeof(float),
+			},
+			{ // UV attribute
+				.location = 3,
+				.binding  = 0,
+				.format   = VK_FORMAT_R32G32_SFLOAT,
+				.offset   = 10 * sizeof(float),
+			},
 		};
 
 		VkPipelineVertexInputStateCreateInfo vertex_input_state = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 			.vertexBindingDescriptionCount   = 1,
 			.pVertexBindingDescriptions      = &binding_description,
-			.vertexAttributeDescriptionCount = 3,
+			.vertexAttributeDescriptionCount = 4,
 			.pVertexAttributeDescriptions    = vertex_attributes,
 		};
 
@@ -856,6 +774,431 @@ void renderer_create_sync_primitives()
 void renderer_destroy_sync_primitives()
 {
 	ZoneScopedN("Synchronization primitives destruction");
+}
+
+void renderer_create_upload_heap()
+{
+	ZoneScopedN("Main upload heap creation");
+
+	{
+		ZoneScopedN("Heap allocation");
+
+		VkBufferCreateInfo create_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size  = 500000000, // 500 MB
+			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		};
+
+		VmaAllocationCreateInfo vma_create_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+		};
+
+		vmaCreateBuffer(gfx_context->vma_allocator,
+						&create_info,
+						&vma_create_info,
+						&renderer->main_upload_heap.buffer,
+						&renderer->main_upload_heap.allocation,
+						nullptr);
+		vmaMapMemory(gfx_context->vma_allocator, renderer->main_upload_heap.allocation,
+					 &renderer->main_upload_heap_ptr);
+
+		name_object(renderer->main_upload_heap.buffer, "Main upload heap");
+	}
+
+	{
+		ZoneScopedN("Command Pool and Command buffer creation");
+
+		VkCommandPoolCreateInfo command_pool_create_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = gfx_context->gfx_queue_family_index,
+		};
+
+		vkCreateCommandPool(gfx_context->device, &command_pool_create_info, nullptr, &renderer->upload_command_pool);
+		name_object(renderer->upload_command_pool, "Main upload heap command pool");
+
+		VkCommandBufferAllocateInfo allocate_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool        = renderer->upload_command_pool,
+			.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = 1,
+		};
+
+		vkAllocateCommandBuffers(gfx_context->device, &allocate_info, &renderer->upload_command_buffer);
+		name_object(renderer->upload_command_buffer, "Main upload heap command buffer");
+	}
+}
+
+void renderer_destroy_upload_heap()
+{
+	ZoneScopedN("Main upload heap destruction");
+}
+
+void load_scene_data()
+{
+	ZoneScopedN("Loading scene data");
+
+	using namespace fastgltf;
+
+	Parser parser;
+	std::filesystem::path gltf_file = "assets/Avocado/glTF/Avocado.gltf";
+
+	GltfDataBuffer data;
+	data.loadFromFile(gltf_file);
+
+	auto gltf = parser.loadGLTF(&data, gltf_file.parent_path(),
+	                            Options::LoadExternalBuffers | Options::LoadExternalImages);
+
+	if (gltf->parse() != Error::None)
+	{
+		throw std::runtime_error("GLTF Problem");
+	}
+
+	auto asset = gltf->getParsedAsset();
+	// I'm not sure if this make a copy, for now I don't introduce this variable
+	// const auto& as = *(asset);
+
+	auto upload_writer = Mapped_Buffer_Writer(renderer->main_upload_heap_ptr);
+
+	std::vector<VkBufferCopy> vertex_copies;
+	std::vector<VkBufferCopy> indices_copies;
+
+	// This maps single GLTF mesh into set of our meshes
+	// (each mesh might have multiple primitives, which we consider separate meshes)
+	std::unordered_map<size_t, std::vector<Mesh_Manager::Id>> asset_mesh_mapper;
+
+	for (size_t mesh_index = 0; mesh_index < asset->meshes.size(); mesh_index++)
+	{
+		auto& mesh = asset->meshes[mesh_index];
+		asset_mesh_mapper[mesh_index] = {}; // Initialize primitives list
+
+		// Each primitive will be separate mesh
+		for (auto& primitive : mesh.primitives)
+		{
+			// Right now, only handle triangles (conversion from other types will be implemented later)
+			if (primitive.type != PrimitiveType::Triangles)
+				throw std::runtime_error("GLTF Problem");
+
+			// We don't generate indices as of now
+			if (!primitive.indicesAccessor.has_value())
+				throw std::runtime_error("GLTF Problem");
+
+			// Check if all attributes are present
+			bool attributes_present =
+				primitive.attributes.contains("POSITION") &&
+				primitive.attributes.contains("NORMAL") &&
+				primitive.attributes.contains("TANGENT") &&
+				primitive.attributes.contains("TEXCOORD_0");
+
+			if (!attributes_present)
+				throw std::runtime_error("GLTF Problem");
+
+			auto indices_accessor  = asset->accessors[primitive.indicesAccessor.value()];
+			auto position_accessor = asset->accessors[primitive.attributes["POSITION"]];
+			auto normal_accessor   = asset->accessors[primitive.attributes["NORMAL"]];
+			auto tangent_accessor  = asset->accessors[primitive.attributes["TANGENT"]];
+			auto texcoord_accessor = asset->accessors[primitive.attributes["TEXCOORD_0"]];
+
+			// So eh, apparently, texcoord can be float, uint8_t or uint16_t... we might need to convert.
+			if (texcoord_accessor.componentType != ComponentType::Float)
+				throw std::runtime_error("GLTF Problem");
+
+			// Also, indices can also be of multiple types...
+			if (indices_accessor.componentType != ComponentType::UnsignedShort)
+				throw std::runtime_error("GLTF Problem");
+
+			// All attributes accessors has matching counts. This is enforced by the specs
+			size_t attr_count = position_accessor.count;
+
+			// Save offset of vertex region
+			VkDeviceSize vertex_src_offset = upload_writer.offset();
+
+			for (size_t offset = 0; offset < attr_count; offset++)
+			{
+				auto p = getAccessorElement<glm::vec3>(*asset, position_accessor, offset);
+				auto n = getAccessorElement<glm::vec3>(*asset, normal_accessor,   offset);
+				auto tg= getAccessorElement<glm::vec4>(*asset, tangent_accessor,  offset);
+				auto tx= getAccessorElement<glm::vec2>(*asset, texcoord_accessor, offset);
+
+				auto attr = { p.x, p.y, p.z, n.x, n.y, n.z, tg.x, tg.y, tg.z, tg.w, tx.x, 1-tx.y }; // Vulkan UV fix
+				upload_writer.write(attr.begin(), 12 * sizeof(float));
+			}
+
+			// Save offset of indices region
+			VkDeviceSize indices_src_offset = upload_writer.offset();
+
+			// Copy indices
+			copyFromAccessor<uint16_t>(*asset, indices_accessor, upload_writer.offset_ptr);
+			upload_writer.advance(indices_accessor.count * sizeof(uint16_t));
+
+			// Allocate mesh and indicies
+			VkResult alloc_result;
+			VmaVirtualAllocationCreateInfo vertex_allocation_info = { .size = attr_count * sizeof(float) * 12 };
+			VmaVirtualAllocation vertex_allocation;
+			VkDeviceSize vertex_dst_offset;
+			alloc_result = vmaVirtualAllocate(mesh_manager->vertex_sub_allocator,
+											  &vertex_allocation_info, &vertex_allocation,
+											  &vertex_dst_offset);
+			if (alloc_result != VK_SUCCESS)
+				throw std::runtime_error("GLTF Problem");
+
+			VmaVirtualAllocationCreateInfo indices_allocation_info = { .size = indices_accessor.count * sizeof(uint16_t) };
+			VmaVirtualAllocation indices_allocation;
+			VkDeviceSize indices_dst_offset;
+			alloc_result = vmaVirtualAllocate(mesh_manager->indices_sub_allocator,
+											  &indices_allocation_info,&indices_allocation,
+											  &indices_dst_offset);
+			if (alloc_result != VK_SUCCESS)
+				throw std::runtime_error("GLTF Problem");
+
+			Mesh_Manager::Mesh_Description mesh_description = {
+				.vertex_offset  = vertex_dst_offset,
+				.vertex_count   = static_cast<uint32_t>(attr_count),
+				.indices_offset = indices_dst_offset,
+				.indices_count  = static_cast<uint32_t>(indices_accessor.count),
+				.vertex_allocation  = vertex_allocation,
+				.indices_allocation = indices_allocation,
+			};
+
+			Mesh_Manager::Id mesh_id = mesh_manager->next_index++;
+			mesh_manager->meshes[mesh_id] = mesh_description;
+
+			vertex_copies.push_back({
+				.srcOffset = vertex_src_offset,
+				.dstOffset = vertex_dst_offset,
+				.size      = vertex_allocation_info.size,
+			});
+
+			indices_copies.push_back({
+				.srcOffset = indices_src_offset,
+				.dstOffset = indices_dst_offset,
+				.size      = indices_allocation_info.size,
+			});
+
+			asset_mesh_mapper[mesh_index].push_back(mesh_id);
+		}
+	}
+
+	flush_buffer_writer(upload_writer, gfx_context->vma_allocator, renderer->main_upload_heap.allocation);
+
+	// Now, let's start traversing entire scene and node hierarchy
+
+	struct Enqueued_Node
+	{
+		glm::mat4 parent_transform;
+		size_t    node_id;
+	};
+	std::deque<Enqueued_Node> nodes_queue;
+
+	// Enqueue root nodes from scenes for traversal
+	for (auto& scene : asset->scenes)
+	{
+		for (auto& node_id : scene.nodeIndices)
+		{
+			nodes_queue.push_back({
+				.parent_transform = glm::translate(glm::mat4 {1.0f}, glm::vec3 {0.0f, 0.0f, 0.0f}),
+				.node_id = node_id,
+			});
+		}
+	}
+
+	while (!nodes_queue.empty())
+	{
+		Enqueued_Node enqueued_node = nodes_queue.front();
+		Node node = asset->nodes[enqueued_node.node_id];
+
+		// Compose matrix if needed
+		glm::mat4 transform_matrix;
+		if (std::holds_alternative<Node::TransformMatrix>(node.transform))
+		{
+			transform_matrix = glm::make_mat4(std::get<Node::TransformMatrix>(node.transform).data());
+		}
+		else
+		{
+			Node::TRS trs = std::get<Node::TRS>(node.transform);
+			auto t = glm::translate(glm::mat4 { 1.0f }, glm::make_vec3(trs.translation.data()));
+			auto r = glm::mat4_cast(glm::make_quat(trs.rotation.data()));
+			auto s = glm::scale(glm::mat4 { 1.0f }, glm::make_vec3(trs.scale.data()));
+			transform_matrix = t * r * s;
+		}
+
+		for (auto& child_id : node.children)
+		{
+			nodes_queue.push_back({
+				.parent_transform = transform_matrix * enqueued_node.parent_transform,
+				.node_id = child_id,
+			});
+		}
+
+		// Finally, spawn scene objects
+		if (node.meshIndex.has_value())
+		{
+			for (Mesh_Manager::Id& mesh_id : asset_mesh_mapper[node.meshIndex.value()])
+			{
+				Render_Object render_object = {
+					.mesh_id   = mesh_id,
+					.transform = transform_matrix,
+				};
+				scene_data->render_objects.push_back(render_object);
+			}
+		}
+
+		nodes_queue.pop_front();
+	}
+
+	{
+		ZoneScopedN("Upload command submission and awaiting");
+
+		VkCommandBufferBeginInfo begin_info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, };
+		vkBeginCommandBuffer(renderer->upload_command_buffer, &begin_info);
+		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
+						mesh_manager->vertex_buffer.buffer, vertex_copies.size(), vertex_copies.data());
+		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
+						mesh_manager->indices_buffer.buffer, indices_copies.size(), indices_copies.data());
+		vkEndCommandBuffer(renderer->upload_command_buffer);
+
+		VkCommandBufferSubmitInfo command_buffer_submit_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+			.commandBuffer = renderer->upload_command_buffer,
+		};
+
+		VkSubmitInfo2 submit_info = {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+			.waitSemaphoreInfoCount   = 0,
+			.commandBufferInfoCount   = 1,
+			.pCommandBufferInfos      = &command_buffer_submit_info,
+			.signalSemaphoreInfoCount = 0,
+		};
+		vkQueueSubmit2(gfx_context->gfx_queue, 1, &submit_info, VK_NULL_HANDLE);
+
+		// Block entire upload operation
+		vkDeviceWaitIdle(gfx_context->device);
+	}
+
+	spdlog::info("Scene_Data loaded");
+
+	// Texture loading
+
+	auto texture = load_file("assets/colored_suzanne/ColorTexture.png");
+	int32_t width, height, channels;
+	auto pixels = stbi_load_from_memory(texture.data(), texture.size(), &width, &height, &channels, STBI_rgb_alpha);
+
+	VkImageCreateInfo image_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_R8G8B8A8_SRGB,
+		.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+
+	VmaAllocationCreateInfo allocation_create_info = {
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+	};
+
+	AllocatedImage image = {};
+	VmaAllocationInfo allocation_info;
+	vmaCreateImage(gfx_context->vma_allocator, &image_create_info, &allocation_create_info,
+				   &image.handle, &image.allocation, &allocation_info);
+	name_object(image.handle, "Color texture");
+
+	VkImageViewCreateInfo image_view_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = image.handle,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = VK_FORMAT_R8G8B8A8_SRGB,
+		.components = {
+			.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+			.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+		},
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+	};
+	VkImageView image_view;
+	vkCreateImageView(gfx_context->device, &image_view_create_info, nullptr, &image_view);
+
+	VkSamplerCreateInfo sampler_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter = VK_FILTER_LINEAR,
+		.minFilter = VK_FILTER_LINEAR,
+		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.mipLodBias = 0,
+		.anisotropyEnable = false,
+		.maxAnisotropy = 16,
+		.compareEnable = false,
+		.compareOp = VK_COMPARE_OP_NEVER,
+		.borderColor = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
+		.unnormalizedCoordinates = false,
+	};
+	VkSampler sampler;
+	vkCreateSampler(gfx_context->device, &sampler_create_info, nullptr, &sampler);
+
+	texture_manager->bindings.push_back({
+											.image = image,
+											.view = image_view,
+											.sampler = sampler,
+										});
+	texture_manager->upload_queue.push_back({
+												.pixels = pixels,
+												.image_size = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) },
+												.image_handle = static_cast<Texture_Manager::Texture_Handle>(texture_manager->bindings.size() - 1),
+											});
+
+	// Temporary write to descriptor
+	{
+		ZoneScopedN("Temporary write to descriptor");
+
+		VkDescriptorBufferInfo descriptor_buffer_info = {
+			.buffer = renderer->per_frame_data_buffer.buffer,
+			.offset = 0,
+			.range  = sizeof(Frame_Uniform_Data),
+		};
+
+		VkDescriptorImageInfo image_info = {
+			.sampler     = texture_manager->bindings[0].sampler,
+			.imageView   = texture_manager->bindings[0].view,
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		};
+
+		VkWriteDescriptorSet descriptor_set_writes[] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = renderer->per_frame_descriptor_set,
+				.dstBinding = 0,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+				.pBufferInfo = &descriptor_buffer_info,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = renderer->per_frame_descriptor_set,
+				.dstBinding = 1,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &image_info,
+			}
+		};
+
+		vkUpdateDescriptorSets(gfx_context->device, 2, descriptor_set_writes, 0, nullptr);
+	}
 }
 
 void renderer_dispatch()
@@ -1215,9 +1558,17 @@ void renderer_dispatch()
 		{
 			ZoneScopedN("Drawing");
 
-			VkDeviceSize offsets = 0;
-			vkCmdBindVertexBuffers(current_frame->draw_command_buffer, 0, 1, &renderer->vertex_buffer.buffer, &offsets);
-			vkCmdDraw(current_frame->draw_command_buffer, renderer->vertices_count, 1, 0, 0);
+			for (auto& render_object : scene_data->render_objects)
+			{
+				Mesh_Manager::Mesh_Description mesh = mesh_manager->get_mesh(render_object.mesh_id);
+				vkCmdBindVertexBuffers(current_frame->draw_command_buffer, 0, 1, &mesh_manager->vertex_buffer.buffer,
+									   &mesh.vertex_offset);
+				vkCmdBindIndexBuffer(current_frame->draw_command_buffer, mesh_manager->indices_buffer.buffer,
+									 mesh.indices_offset, VK_INDEX_TYPE_UINT16);
+				vkCmdPushConstants(current_frame->draw_command_buffer, renderer->pipeline_layout,
+								   VK_SHADER_STAGE_ALL_GRAPHICS, 0, 16 * sizeof(float), &render_object.transform);
+				vkCmdDrawIndexed(current_frame->draw_command_buffer, mesh.indices_count, 1, 0, 0, 1);
+			}
 		}
 		command_buffer_region_end(current_frame->draw_command_buffer);
 		vkCmdEndRendering(current_frame->draw_command_buffer);
