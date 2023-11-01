@@ -66,7 +66,7 @@ void mesh_manager_init()
 	{
 		VkBufferCreateInfo creation_info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size  = 100000,
+			.size  = 500000000,
 			.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 		};
 
@@ -88,7 +88,7 @@ void mesh_manager_init()
 	{
 		VkBufferCreateInfo creation_info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size  = 100000,
+			.size  = 100000000,
 			.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
 		};
 
@@ -108,13 +108,13 @@ void mesh_manager_init()
 
 	// Vertex buffer suballocation
 	{
-		VmaVirtualBlockCreateInfo create_info = { .size  = 100000, .flags = 0 };
+		VmaVirtualBlockCreateInfo create_info = { .size  = 500000000, .flags = 0 };
 		vmaCreateVirtualBlock(&create_info, &mesh_manager->vertex_sub_allocator);
 	}
 
 	// Indices buffer suballocation
 	{
-		VmaVirtualBlockCreateInfo create_info = { .size  = 100000, .flags = 0 };
+		VmaVirtualBlockCreateInfo create_info = { .size  = 100000000, .flags = 0 };
 		vmaCreateVirtualBlock(&create_info, &mesh_manager->indices_sub_allocator);
 	}
 }
@@ -842,7 +842,7 @@ void load_scene_data()
 	using namespace fastgltf;
 
 	Parser parser;
-	std::filesystem::path gltf_file = "assets/Avocado/glTF/Avocado.gltf";
+	std::filesystem::path gltf_file = "assets/Sponza/glTF/Sponza.gltf";
 
 	GltfDataBuffer data;
 	data.loadFromFile(gltf_file);
@@ -884,15 +884,21 @@ void load_scene_data()
 			if (!primitive.indicesAccessor.has_value())
 				throw std::runtime_error("GLTF Problem");
 
-			// Check if all attributes are present
+			// Check if all required attributes are present
 			bool attributes_present =
 				primitive.attributes.contains("POSITION") &&
 				primitive.attributes.contains("NORMAL") &&
-				primitive.attributes.contains("TANGENT") &&
 				primitive.attributes.contains("TEXCOORD_0");
+
+			bool has_tangent = primitive.attributes.contains("TANGENT");
 
 			if (!attributes_present)
 				throw std::runtime_error("GLTF Problem");
+
+			if (!has_tangent)
+			{
+				spdlog::info("Missing tangent!"); // Todo better logging
+			}
 
 			auto indices_accessor  = asset->accessors[primitive.indicesAccessor.value()];
 			auto position_accessor = asset->accessors[primitive.attributes["POSITION"]];
@@ -918,8 +924,11 @@ void load_scene_data()
 			{
 				auto p = getAccessorElement<glm::vec3>(*asset, position_accessor, offset);
 				auto n = getAccessorElement<glm::vec3>(*asset, normal_accessor,   offset);
-				auto tg= getAccessorElement<glm::vec4>(*asset, tangent_accessor,  offset);
 				auto tx= getAccessorElement<glm::vec2>(*asset, texcoord_accessor, offset);
+
+				auto tg = (has_tangent)
+					? getAccessorElement<glm::vec4>(*asset, tangent_accessor,  offset)
+					: glm::vec4(0, 0, 0, 0);
 
 				auto attr = { p.x, p.y, p.z, n.x, n.y, n.z, tg.x, tg.y, tg.z, tg.w, tx.x, 1-tx.y }; // Vulkan UV fix
 				upload_writer.write(attr.begin(), 12 * sizeof(float));
