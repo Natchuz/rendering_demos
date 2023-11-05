@@ -7,6 +7,10 @@
 // Returns size of block that includes alignment
 size_t clamp_size_to_alignment(size_t block_size, size_t alignment);
 
+// Create basic image view based on image creation info
+VkResult create_default_image_view(VkDevice device, VkImageCreateInfo& image_create_info, VkImage image,
+								   VkAllocationCallbacks* allocation_callbacks, VkImageView* image_view);
+
 // VK_EXT_debug_utils helpers:
 
 template <class... Args>

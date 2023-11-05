@@ -19,8 +19,9 @@ struct Mapped_Buffer_Writer
 	[[nodiscard]] size_t offset() const;
 
 	void advance(size_t size);
+	void align_next(size_t alignment); // Align cursor
 
-	void write(const void* data, size_t size);
+	size_t write(const void* data, size_t size); // Returns offset at which data is copied
 };
 
 void flush_buffer_writer(Mapped_Buffer_Writer& writer, VmaAllocator vma_allocator, VmaAllocation vma_allocation);
@@ -75,26 +76,11 @@ struct Scene_Data
 
 inline Scene_Data* scene_data;
 
-// This one is intended for managing bindless sampled textures/images
 struct Texture_Manager
 {
-	struct Sampled_Image
-	{
-		AllocatedImage image;
-		VkImageView    view;
-		VkSampler      sampler;
-	};
-	typedef uint32_t Texture_Handle;
-
-	struct Upload_Data
-	{
-		stbi_uc*      pixels;
-		VkExtent2D    image_size;
-		Texture_Handle image_handle;
-	};
-
-	std::vector<Sampled_Image> bindings;
-	std::deque<Upload_Data>    upload_queue;
+	// FIXME Both of these should actually _not_ be textures, but rather an slot allocator.
+	std::vector<VkSampler>            samplers;
+	std::vector<Allocated_View_Image> images;
 };
 
 inline Texture_Manager* texture_manager;

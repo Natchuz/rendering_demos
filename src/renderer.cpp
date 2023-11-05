@@ -11,6 +11,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>
 #include <imgui/backends/imgui_impl_vulkan.h>
+#include <unordered_map>
 #include <volk.h>
 
 // Private functions
@@ -34,10 +35,12 @@ Mapped_Buffer_Writer::Mapped_Buffer_Writer(void* mapped_buffer_ptr)
 	this->offset_ptr = base_ptr;
 }
 
-void Mapped_Buffer_Writer::write(const void* data, size_t size)
+size_t Mapped_Buffer_Writer::write(const void* data, size_t size)
 {
+	size_t start_offset = offset();
 	memcpy(offset_ptr, data, size);
 	advance(size);
+	return start_offset;
 }
 
 [[nodiscard]] size_t Mapped_Buffer_Writer::offset() const
@@ -48,6 +51,15 @@ void Mapped_Buffer_Writer::write(const void* data, size_t size)
 void Mapped_Buffer_Writer::advance(size_t size)
 {
 	offset_ptr = offset_ptr + size;
+}
+
+void Mapped_Buffer_Writer::align_next(size_t alignment) {
+	size_t to_advance = 0;
+	if (alignment > 0)
+	{
+		to_advance = ((offset() + alignment - 1) & ~(alignment - 1)) - offset();
+	}
+	advance(to_advance);
 }
 
 void flush_buffer_writer(Mapped_Buffer_Writer& writer, VmaAllocator vma_allocator, VmaAllocation vma_allocation)
@@ -131,7 +143,30 @@ void mesh_manager_deinit()
 
 void texture_manager_init()
 {
+	ZoneScopedN("Texture manager initialization");
+
 	texture_manager = new Texture_Manager{};
+
+	// Create default sampler
+	VkSamplerCreateInfo default_sampler_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter        = VK_FILTER_LINEAR,
+		.minFilter        = VK_FILTER_LINEAR,
+		.mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+		.addressModeU     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.addressModeV     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.addressModeW     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+		.mipLodBias       = 0,
+		.anisotropyEnable = false,
+		.maxAnisotropy    = 16,
+		.compareEnable    = false,
+		.compareOp        = VK_COMPARE_OP_NEVER,
+		.borderColor      = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
+		.unnormalizedCoordinates = false,
+	};
+	VkSampler default_sampler;
+	vkCreateSampler(gfx_context->device, &default_sampler_create_info, nullptr, &default_sampler);
+	texture_manager->samplers.push_back(default_sampler);
 }
 
 void texture_manager_deinit()
@@ -841,23 +876,23 @@ void load_scene_data()
 
 	using namespace fastgltf;
 
+	auto start_time = std::chrono::high_resolution_clock::now();
+
 	Parser parser;
 	std::filesystem::path gltf_file = "assets/Sponza/glTF/Sponza.gltf";
 
-	GltfDataBuffer data;
-	data.loadFromFile(gltf_file);
+	spdlog::info("Loading GLTF 2.0 file {}", gltf_file.string());
 
-	auto gltf = parser.loadGLTF(&data, gltf_file.parent_path(),
+	GltfDataBuffer gltf_data;
+	gltf_data.loadFromFile(gltf_file);
+
+	auto gltf = parser.loadGLTF(&gltf_data, gltf_file.parent_path(),
 	                            Options::LoadExternalBuffers | Options::LoadExternalImages);
 
 	if (gltf->parse() != Error::None)
-	{
 		throw std::runtime_error("GLTF Problem");
-	}
 
 	auto asset = gltf->getParsedAsset();
-	// I'm not sure if this make a copy, for now I don't introduce this variable
-	// const auto& as = *(asset);
 
 	auto upload_writer = Mapped_Buffer_Writer(renderer->main_upload_heap_ptr);
 
@@ -866,12 +901,12 @@ void load_scene_data()
 
 	// This maps single GLTF mesh into set of our meshes
 	// (each mesh might have multiple primitives, which we consider separate meshes)
-	std::unordered_map<size_t, std::vector<Mesh_Manager::Id>> asset_mesh_mapper;
+	std::unordered_map<size_t, std::vector<Mesh_Manager::Id>> asset_map_meshes;
 
 	for (size_t mesh_index = 0; mesh_index < asset->meshes.size(); mesh_index++)
 	{
 		auto& mesh = asset->meshes[mesh_index];
-		asset_mesh_mapper[mesh_index] = {}; // Initialize primitives list
+		asset_map_meshes[mesh_index] = {}; // Initialize primitives list
 
 		// Each primitive will be separate mesh
 		for (auto& primitive : mesh.primitives)
@@ -941,7 +976,7 @@ void load_scene_data()
 			copyFromAccessor<uint16_t>(*asset, indices_accessor, upload_writer.offset_ptr);
 			upload_writer.advance(indices_accessor.count * sizeof(uint16_t));
 
-			// Allocate mesh and indicies
+			// Allocate mesh and indices
 			VkResult alloc_result;
 			VmaVirtualAllocationCreateInfo vertex_allocation_info = { .size = attr_count * sizeof(float) * 12 };
 			VmaVirtualAllocation vertex_allocation;
@@ -985,11 +1020,9 @@ void load_scene_data()
 				.size      = indices_allocation_info.size,
 			});
 
-			asset_mesh_mapper[mesh_index].push_back(mesh_id);
+			asset_map_meshes[mesh_index].push_back(mesh_id);
 		}
 	}
-
-	flush_buffer_writer(upload_writer, gfx_context->vma_allocator, renderer->main_upload_heap.allocation);
 
 	// Now, let's start traversing entire scene and node hierarchy
 
@@ -1043,7 +1076,7 @@ void load_scene_data()
 		// Finally, spawn scene objects
 		if (node.meshIndex.has_value())
 		{
-			for (Mesh_Manager::Id& mesh_id : asset_mesh_mapper[node.meshIndex.value()])
+			for (Mesh_Manager::Id& mesh_id : asset_map_meshes[node.meshIndex.value()])
 			{
 				Render_Object render_object = {
 					.mesh_id   = mesh_id,
@@ -1056,15 +1089,221 @@ void load_scene_data()
 		nodes_queue.pop_front();
 	}
 
+	// Texture and sampler data loading into texture_manager.
+	// This design might seem weird, but gathering all textures in one place opens doors to easier migration to
+	// bindless in the future.
+
+	struct Image_Upload {
+		size_t            image_index;
+		int               height, width;
+		VkDeviceSize      upload_offset;
+	};
+
+	std::vector<Image_Upload>          image_uploads;
+	std::unordered_map<size_t, size_t> asset_map_images; // Maps index of GLTF image to index in texture_manager
+
+	for (size_t asset_image_index = 0; asset_image_index < asset->images.size(); asset_image_index++)
 	{
-		ZoneScopedN("Upload command submission and awaiting");
+		auto& image = asset->images[asset_image_index];
+
+		auto data = std::get<sources::Vector>(image.data);
+		
+		if (data.mimeType == MimeType::None)
+			throw std::runtime_error("GLTF Problem");
+
+		int width, height, channels;
+		auto pixels = stbi_load_from_memory(data.bytes.data(), static_cast<int>(data.bytes.size()),
+											&width, &height, &channels, STBI_rgb_alpha);
+
+		if (pixels == nullptr)
+			throw std::runtime_error("GLTF Problem");
+
+		Allocated_View_Image view_image; // What we will be allocating
+
+		VkImageCreateInfo image_create_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType     = VK_IMAGE_TYPE_2D,
+			.format        = VK_FORMAT_R8G8B8A8_SRGB,
+			.extent        = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1},
+			.mipLevels     = 1,
+			.arrayLayers   = 1,
+			.samples       = VK_SAMPLE_COUNT_1_BIT,
+			.tiling        = VK_IMAGE_TILING_OPTIMAL,
+			.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			.sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		VmaAllocationCreateInfo allocation_create_info = { .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, };
+
+		VmaAllocationInfo allocation_info;
+		vmaCreateImage(gfx_context->vma_allocator, &image_create_info,
+					   &allocation_create_info,&view_image.image,
+					   &view_image.allocation, &allocation_info);
+		name_object(view_image.image, "Loaded image {} {}", asset_image_index, image.name);
+
+		// Create default image view
+		create_default_image_view(gfx_context->device, image_create_info, view_image.image, nullptr, &view_image.view);
+		name_object(view_image.view, "Loaded image view {} {}", asset_image_index, image.name);
+
+		// Put in texture_manager
+		texture_manager->images.push_back(view_image);
+		size_t image_index = texture_manager->images.size() - 1;
+		asset_map_images[asset_image_index] = image_index;
+
+		// Push to upload heap and enqueue for upload
+		upload_writer.align_next(4); // Offset need to be multiple of texel size (4)
+		VkDeviceSize offset = upload_writer.write(pixels, height * width * channels);
+		image_uploads.push_back({
+			.image_index   = image_index,
+			.height        = height,
+			.width         = width,
+			.upload_offset = offset,
+		});
+
+		// Free from stb_image
+		stbi_image_free(pixels);
+	}
+
+	// Read and crate all samplers
+
+	std::unordered_map<size_t, size_t> asset_map_samplers; // Maps index of GLTF image to index in texture_manager
+
+	for (size_t asset_sampler_index = 0; asset_sampler_index < asset->samplers.size(); asset_sampler_index++) {
+		auto& sampler = asset->samplers[asset_sampler_index];
+
+		VkSamplerAddressMode address_mode_u =
+			(sampler.wrapS == Wrap::ClampToEdge)    ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE   :
+			(sampler.wrapS == Wrap::MirroredRepeat) ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT :
+			VK_SAMPLER_ADDRESS_MODE_REPEAT; // Wrap::Repeat
+
+		VkSamplerAddressMode address_mode_v =
+			(sampler.wrapT == Wrap::ClampToEdge)    ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE   :
+			(sampler.wrapT == Wrap::MirroredRepeat) ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT :
+			VK_SAMPLER_ADDRESS_MODE_REPEAT; // Wrap::Repeat
+
+		VkFilter mag_filter = VK_FILTER_LINEAR;
+		if (sampler.magFilter.has_value() && sampler.magFilter.value() == Filter::Nearest)
+		{
+			mag_filter = VK_FILTER_NEAREST; // Mag filter can only have linear or nearest.
+		}
+
+		VkFilter min_filter             = VK_FILTER_LINEAR;
+		VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		if (sampler.minFilter.has_value())
+		{
+			auto gltf_f = sampler.minFilter.value();
+			min_filter = (gltf_f == Filter::NearestMipMapNearest || gltf_f == Filter::NearestMipMapLinear)
+				? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+			mipmap_mode = (gltf_f == Filter::NearestMipMapNearest || gltf_f == Filter::LinearMipMapNearest)
+						 ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		}
+
+		VkSamplerCreateInfo sampler_create_info = {
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter        = mag_filter,
+			.minFilter        = min_filter,
+			.mipmapMode       = mipmap_mode,
+			.addressModeU     = address_mode_u,
+			.addressModeV     = address_mode_v,
+			.addressModeW     = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+			.mipLodBias       = 0,
+			.anisotropyEnable = false,
+			.maxAnisotropy    = 16,
+			.compareEnable    = false,
+			.compareOp        = VK_COMPARE_OP_NEVER,
+			.borderColor      = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
+			.unnormalizedCoordinates = false,
+		};
+		VkSampler our_sampler;
+		vkCreateSampler(gfx_context->device, &sampler_create_info, nullptr, &our_sampler);
+		name_object(our_sampler, "Loaded sampler {} {}", asset_sampler_index, sampler.name);
+
+		// Put in texture_manager
+		texture_manager->samplers.push_back(our_sampler);
+		size_t sampler_index = texture_manager->samplers.size() - 1;
+		asset_map_images[asset_sampler_index] = sampler_index;
+	}
+
+	{
+		ZoneScopedN("Upload command submission");
+
+		flush_buffer_writer(upload_writer, gfx_context->vma_allocator, renderer->main_upload_heap.allocation);
 
 		VkCommandBufferBeginInfo begin_info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, };
 		vkBeginCommandBuffer(renderer->upload_command_buffer, &begin_info);
+
+		// Copy buffers
 		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
 						mesh_manager->vertex_buffer.buffer, vertex_copies.size(), vertex_copies.data());
 		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
 						mesh_manager->indices_buffer.buffer, indices_copies.size(), indices_copies.data());
+
+		// Enqueue upload of all pending textures
+		for (auto& image_upload : image_uploads)
+		{
+			auto vk_image = texture_manager->images[image_upload.image_index].image;
+
+			// Transition to copy layout
+			VkImageMemoryBarrier to_transfer_dst_barrier = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.srcAccessMask = 0,
+				.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+				.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.image         = vk_image,
+				.subresourceRange = {
+					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel   = 0,
+					.levelCount     = 1,
+					.baseArrayLayer = 0,
+					.layerCount     = 1,
+				},
+			};
+			vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
+								 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+								 &to_transfer_dst_barrier);
+
+			// Enqueue copy
+			VkBufferImageCopy region = {
+				.bufferOffset = image_upload.upload_offset,
+				.imageSubresource = {
+					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel       = 0,
+					.baseArrayLayer = 0,
+					.layerCount     = 1,
+				},
+				.imageExtent = {
+					.width   = static_cast<uint32_t>(image_upload.width),
+					.height  = static_cast<uint32_t>(image_upload.height),
+					.depth   = 1,
+				},
+			};
+			vkCmdCopyBufferToImage(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
+								   vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+			// Immediately transition into proper layout
+			VkImageMemoryBarrier from_transform_transition_barrier = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				.image         = vk_image,
+				.subresourceRange = {
+					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel   = 0,
+					.levelCount     = 1,
+					.baseArrayLayer = 0,
+					.layerCount     = 1,
+				},
+			};
+
+			vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+								 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+								 &from_transform_transition_barrier);
+		}
+
 		vkEndCommandBuffer(renderer->upload_command_buffer);
 
 		VkCommandBufferSubmitInfo command_buffer_submit_info = {
@@ -1082,92 +1321,15 @@ void load_scene_data()
 		vkQueueSubmit2(gfx_context->gfx_queue, 1, &submit_info, VK_NULL_HANDLE);
 
 		// Block entire upload operation
-		vkDeviceWaitIdle(gfx_context->device);
+		{
+			ZoneScopedN("Upload command execution");
+			vkDeviceWaitIdle(gfx_context->device);
+		}
 	}
 
-	spdlog::info("Scene_Data loaded");
-
-	// Texture loading
-
-	auto texture = load_file("assets/colored_suzanne/ColorTexture.png");
-	int32_t width, height, channels;
-	auto pixels = stbi_load_from_memory(texture.data(), texture.size(), &width, &height, &channels, STBI_rgb_alpha);
-
-	VkImageCreateInfo image_create_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_R8G8B8A8_SRGB,
-		.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1},
-		.mipLevels = 1,
-		.arrayLayers = 1,
-		.samples = VK_SAMPLE_COUNT_1_BIT,
-		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-	};
-
-	VmaAllocationCreateInfo allocation_create_info = {
-		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-	};
-
-	AllocatedImage image = {};
-	VmaAllocationInfo allocation_info;
-	vmaCreateImage(gfx_context->vma_allocator, &image_create_info, &allocation_create_info,
-				   &image.handle, &image.allocation, &allocation_info);
-	name_object(image.handle, "Color texture");
-
-	VkImageViewCreateInfo image_view_create_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-		.image = image.handle,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = VK_FORMAT_R8G8B8A8_SRGB,
-		.components = {
-			.r = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.g = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.b = VK_COMPONENT_SWIZZLE_IDENTITY,
-			.a = VK_COMPONENT_SWIZZLE_IDENTITY,
-		},
-		.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = 1,
-			.baseArrayLayer = 0,
-			.layerCount = 1,
-		},
-	};
-	VkImageView image_view;
-	vkCreateImageView(gfx_context->device, &image_view_create_info, nullptr, &image_view);
-
-	VkSamplerCreateInfo sampler_create_info = {
-		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-		.magFilter = VK_FILTER_LINEAR,
-		.minFilter = VK_FILTER_LINEAR,
-		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-		.mipLodBias = 0,
-		.anisotropyEnable = false,
-		.maxAnisotropy = 16,
-		.compareEnable = false,
-		.compareOp = VK_COMPARE_OP_NEVER,
-		.borderColor = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
-		.unnormalizedCoordinates = false,
-	};
-	VkSampler sampler;
-	vkCreateSampler(gfx_context->device, &sampler_create_info, nullptr, &sampler);
-
-	texture_manager->bindings.push_back({
-											.image = image,
-											.view = image_view,
-											.sampler = sampler,
-										});
-	texture_manager->upload_queue.push_back({
-												.pixels = pixels,
-												.image_size = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) },
-												.image_handle = static_cast<Texture_Manager::Texture_Handle>(texture_manager->bindings.size() - 1),
-											});
+	auto finish_time = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(finish_time - start_time);
+	spdlog::info("Scene loaded! [{:.2f}s]", duration.count());
 
 	// Temporary write to descriptor
 	{
@@ -1180,8 +1342,8 @@ void load_scene_data()
 		};
 
 		VkDescriptorImageInfo image_info = {
-			.sampler     = texture_manager->bindings[0].sampler,
-			.imageView   = texture_manager->bindings[0].view,
+			.sampler     = texture_manager->samplers[0],
+			.imageView   = texture_manager->images[0].view,
 			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		};
 
@@ -1251,79 +1413,6 @@ void renderer_dispatch()
 	};
 	vkBeginCommandBuffer(current_frame->upload_command_buffer, &upload_begin_info); // Implicit reset
 	command_buffer_region_begin(current_frame->upload_command_buffer, "Upload stage");
-
-	// Enqueue upload of all pending textures
-	{
-		ZoneScopedN("Upload image data");
-
-		for (auto upload_data: texture_manager->upload_queue)
-		{
-			auto image_size = upload_data.image_size.width * upload_data.image_size.height * 4;
-
-			memcpy(staging_buffer_ptr + linear_allocator, upload_data.pixels, image_size);
-			stbi_image_free(upload_data.pixels); // Pixels are no longer required on RAM
-
-			// Transition to copy layout
-			VkImageMemoryBarrier to_transfer_transition_barrier = {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				.srcAccessMask = 0,
-				.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-				.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
-				.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				.image         = texture_manager->bindings[upload_data.image_handle].image.handle,
-				.subresourceRange = {
-					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-					.baseMipLevel   = 0,
-					.levelCount     = 1,
-					.baseArrayLayer = 0,
-					.layerCount     = 1,
-				},
-			};
-			vkCmdPipelineBarrier(current_frame->upload_command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
-								 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-								 &to_transfer_transition_barrier);
-
-			// Enqueue copy
-			VkBufferImageCopy region = {
-				.imageSubresource = {
-					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-					.mipLevel       = 0,
-					.baseArrayLayer = 0,
-					.layerCount     = 1,
-				},
-				.imageExtent = {
-					.width   = upload_data.image_size.width,
-					.height  = upload_data.image_size.height,
-					.depth   = 1,
-				},
-			};
-			vkCmdCopyBufferToImage(current_frame->upload_command_buffer, current_frame->staging_buffer.buffer,
-								   texture_manager->bindings[upload_data.image_handle].image.handle,
-								   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-			linear_allocator += image_size;
-
-			// Immediately transition into proper layout
-			VkImageMemoryBarrier from_transform_transition_barrier = {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-				.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				.image         = texture_manager->bindings[upload_data.image_handle].image.handle,
-				.subresourceRange = {
-					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-					.baseMipLevel   = 0,
-					.levelCount     = 1,
-					.baseArrayLayer = 0,
-					.layerCount     = 1,
-				},
-			};
-			vkCmdPipelineBarrier(current_frame->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-								 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-								 &from_transform_transition_barrier);
-		}
-		texture_manager->upload_queue.clear();
-	}
 
 	// Build and stage per-frame data
 	{
