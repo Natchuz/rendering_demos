@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gfx_context.h"
+#include "vulkan_utilities.h"
 
 #include <map>
 #include <deque>
@@ -101,7 +102,7 @@ struct Frame_Data
 	void*           staging_buffer_ptr;
 };
 
-struct Frame_Uniform_Data
+struct Global_Uniform_Data
 {
 	glm::mat4x4 render_matrix;
 };
@@ -114,16 +115,18 @@ enum Buffering_Type : uint32_t
 
 struct Renderer
 {
+	Descriptor_Set_Allocator descriptor_set_allocator; // Global descriptor set allocator
+
+	// Global data for shaders
+	VkDescriptorSetLayout global_data_descriptor_set_layout;
+	VkDescriptorSet       global_data_descriptor_set;
+	AllocatedBuffer       global_uniform_data_buffer;
+
+	// Frames-in-flight related
 	Buffering_Type          buffering;
 	std::vector<Frame_Data> frame_data;
 
-	AllocatedBuffer per_frame_data_buffer;
-
 	Allocated_View_Image depth_buffer;
-
-	VkDescriptorPool      descriptor_pool;
-	VkDescriptorSet       per_frame_descriptor_set;
-	VkDescriptorSetLayout per_frame_descriptor_set_layout;
 
 	VkShaderModule vertex_shader;
 	VkShaderModule fragment_shader;
@@ -160,6 +163,3 @@ void depth_buffer_destroy();
 
 void renderer_create_frame_data();
 void renderer_destroy_frame_data();
-
-void renderer_create_buffers();
-void renderer_destroy_buffers();

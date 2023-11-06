@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include <format>
 #include <volk.h>
 #include <vulkan/vulkan.h>
@@ -10,6 +11,37 @@ size_t clamp_size_to_alignment(size_t block_size, size_t alignment);
 // Create basic image view based on image creation info
 VkResult create_default_image_view(VkDevice device, VkImageCreateInfo& image_create_info, VkImage image,
 								   VkAllocationCallbacks* allocation_callbacks, VkImageView* image_view);
+
+// Helper class for dealing with descriptor allocation
+struct Descriptor_Set_Allocator
+{
+	// Configure pools
+	constexpr static inline uint32_t MAX_SETS = 1000;
+	constexpr static inline VkDescriptorPoolSize pool_sizes[] = {
+		{ VK_DESCRIPTOR_TYPE_SAMPLER,                500  },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8000 },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          8000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,   1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,   1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         2000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         2000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       500  },
+	};
+
+	VkDescriptorPoolCreateFlags   flags; // Specify this when needed on creation
+	VkDescriptorPool              current_pool;
+	std::vector<VkDescriptorPool> free_pools;
+	std::vector<VkDescriptorPool> used_pools;
+
+	void allocate(VkDevice device, VkDescriptorSetLayout layout, VkDescriptorSet* set);
+
+	void create_reserve_pool(VkDevice device);
+};
+
+void descriptor_set_allocator_deinit(Descriptor_Set_Allocator* allocator, VkDevice device);
 
 // VK_EXT_debug_utils helpers:
 

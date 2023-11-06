@@ -13,13 +13,13 @@
 #include <imgui/backends/imgui_impl_vulkan.h>
 #include <unordered_map>
 #include <volk.h>
+#include <vulkan/vulkan_core.h>
 
 // Private functions
 void load_scene_data();
 std::vector<uint8_t> load_file(const char* file_path);
 
-void renderer_create_descriptors();
-void renderer_destroy_descriptors();
+void renderer_create_global_uniforms();
 void renderer_create_shaders();
 void renderer_destroy_shaders();
 void renderer_create_pipeline();
@@ -182,9 +182,11 @@ void renderer_init()
 	mesh_manager_init();
 	texture_manager_init();
 	depth_buffer_create();
+
+	renderer->descriptor_set_allocator = {};
+
 	renderer_create_frame_data();
-	renderer_create_buffers();
-	renderer_create_descriptors();
+	renderer_create_global_uniforms();
 	renderer_create_shaders();
 	renderer_create_pipeline();
 	renderer_create_sync_primitives();
@@ -200,8 +202,6 @@ void renderer_deinit()
 	renderer_destroy_sync_primitives();
 	renderer_destroy_pipeline();
 	renderer_destroy_shaders();
-	renderer_destroy_descriptors();
-	renderer_destroy_buffers();
 	renderer_destroy_frame_data();
 	depth_buffer_destroy();
 	texture_manager_deinit();
@@ -411,16 +411,69 @@ void renderer_destroy_frame_data()
 	}
 }
 
-void renderer_create_buffers()
+void renderer_create_global_uniforms()
 {
-	ZoneScopedN("Buffers creation");
+	ZoneScopedN("Global uniforms creation");
+
+	{
+		ZoneScopedN("Global descriptors");
+
+		VkDescriptorSetLayoutBinding bindings[] = {
+			{ // Global uniform data
+				.binding         = 0,
+				.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+				.descriptorCount = 1,
+				.stageFlags      = VK_SHADER_STAGE_ALL,
+			},
+			{ // 2D Samplers
+				.binding         = 1,
+				.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+				.descriptorCount = 100, // Maximum 100 samplers
+				.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT,
+			},
+			{ // 2D Textures
+				.binding         = 2,
+				.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				.descriptorCount = 5000, // Maximum 5000 textures
+				.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT,
+			},
+		};
+
+		VkDescriptorBindingFlags flags[] = {
+			0,
+			VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
+			VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
+		};
+
+		VkDescriptorSetLayoutBindingFlagsCreateInfo flags_create_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+			.bindingCount  = 3,
+			.pBindingFlags = flags,
+		};
+
+		VkDescriptorSetLayoutCreateInfo create_info = {
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = &flags_create_info,
+			.flags        = 0,
+			.bindingCount = 3,
+			.pBindings    = bindings,
+		};
+
+		vkCreateDescriptorSetLayout(gfx_context->device, &create_info, nullptr,
+									&renderer->global_data_descriptor_set_layout);
+		name_object(renderer->global_data_descriptor_set_layout, "Global data descriptor layout");
+
+		renderer->descriptor_set_allocator.allocate(gfx_context->device, renderer->global_data_descriptor_set_layout,
+													&renderer->global_data_descriptor_set);
+		name_object(renderer->global_data_descriptor_set, "Global data descriptor");
+	}
 
 	// Uniform buffer
 	{
-		ZoneScopedN("Uniform buffer creation");
+		ZoneScopedN("Global uniform buffer creation");
 
 		auto size = clamp_size_to_alignment(
-			sizeof(Frame_Uniform_Data),
+			sizeof(Global_Uniform_Data),
 			gfx_context->physical_device_properties.properties.limits.minUniformBufferOffsetAlignment);
 		size *= renderer->buffering;
 
@@ -437,15 +490,11 @@ void renderer_create_buffers()
 		vmaCreateBuffer(gfx_context->vma_allocator,
 						&buffer_create_info,
 						&vma_buffer_create_info,
-						&renderer->per_frame_data_buffer.buffer,
-						&renderer->per_frame_data_buffer.allocation,
+						&renderer->global_uniform_data_buffer.buffer,
+						&renderer->global_uniform_data_buffer.allocation,
 						nullptr);
-		name_object(renderer->per_frame_data_buffer.buffer, "Frame data uniform buffer");
+		name_object(renderer->global_uniform_data_buffer.buffer, "Global data uniform buffer");
 	}
-}
-
-void renderer_destroy_buffers()
-{
 }
 
 std::vector<uint8_t> load_file(const char* file_path)
@@ -465,108 +514,6 @@ std::vector<uint8_t> load_file(const char* file_path)
 	file.close();
 
 	return buffer;
-}
-
-void renderer_create_descriptors()
-{
-	ZoneScopedN("Descriptors creation");
-
-	// Create descriptor set layout
-	{
-		ZoneScopedN("Layout creation");
-
-		VkDescriptorSetLayoutBinding set_layout_bindings[] = {
-			{
-				.binding         = 0,
-				.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-				.descriptorCount = 1,
-				.stageFlags      = VK_SHADER_STAGE_ALL_GRAPHICS,
-			},
-			{
-				.binding         = 1,
-				.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 10,
-				.stageFlags      = VK_SHADER_STAGE_ALL_GRAPHICS,
-			},
-		};
-
-		VkDescriptorBindingFlags flags[] = {0, VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
-
-		VkDescriptorSetLayoutBindingFlagsCreateInfo layout_flags_create_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-			.bindingCount  = 2,
-			.pBindingFlags = flags,
-		};
-
-		VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.pNext = &layout_flags_create_info,
-			.flags = 0,
-			.bindingCount = 2,
-			.pBindings    = set_layout_bindings,
-		};
-
-		vkCreateDescriptorSetLayout(gfx_context->device, &descriptor_set_layout_create_info, nullptr,
-									&renderer->per_frame_descriptor_set_layout);
-		name_object(renderer->per_frame_descriptor_set_layout, "per_frame_descriptor_set_layout");
-	}
-
-	// Create descriptor pool
-	{
-		ZoneScopedN("Pool creation");
-
-		VkDescriptorPoolSize pool_sizes[] = {
-			{
-				.type  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-				.descriptorCount = 10,
-			},
-			{
-				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.descriptorCount = 100,
-			},
-		};
-
-		VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-			.flags         = 0,
-			.maxSets       = 10,
-			.poolSizeCount = 2,
-			.pPoolSizes    = pool_sizes,
-		};
-
-		vkCreateDescriptorPool(gfx_context->device, &descriptor_pool_create_info, nullptr, &renderer->descriptor_pool);
-		name_object(renderer->descriptor_pool, "Main descriptor pool");
-	}
-
-	// Allocate descriptor set
-	{
-		ZoneScopedN("Descriptor set allocation");
-
-		uint32_t counts[] = { 1 };
-
-		VkDescriptorSetVariableDescriptorCountAllocateInfo descriptor_variable_size_allocate_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
-			.descriptorSetCount = 1,
-			.pDescriptorCounts  = counts,
-		};
-
-		VkDescriptorSetAllocateInfo descriptor_set_allocate_info = {
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.pNext = &descriptor_variable_size_allocate_info,
-			.descriptorPool     = renderer->descriptor_pool,
-			.descriptorSetCount = 1,
-			.pSetLayouts        = &renderer->per_frame_descriptor_set_layout,
-		};
-
-		vkAllocateDescriptorSets(gfx_context->device, &descriptor_set_allocate_info,
-								 &renderer->per_frame_descriptor_set);
-		name_object(renderer->per_frame_descriptor_set, "per_frame_descriptor_set");
-	}
-}
-
-void renderer_destroy_descriptors()
-{
-	ZoneScopedN("Descriptors destruction");
 }
 
 void renderer_create_shaders()
@@ -606,17 +553,19 @@ void renderer_create_pipeline()
 	{
 		ZoneScopedN("Pipeline layout creation");
 
+		VkDescriptorSetLayout set_layouts[] = {renderer->global_data_descriptor_set_layout };
+
 		VkPushConstantRange push_constant_range = {
 			.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
 			.offset     = 0,
-			.size       = 16 * sizeof(float),
+			.size       = 16 * sizeof(float) + 4,
 		};
 
 		VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 			.flags = 0,
-			.setLayoutCount = 1,
-			.pSetLayouts    = &renderer->per_frame_descriptor_set_layout,
+			.setLayoutCount         = 1,
+			.pSetLayouts            = set_layouts,
 			.pushConstantRangeCount = 1,
 			.pPushConstantRanges    = &push_constant_range,
 		};
@@ -1331,45 +1280,67 @@ void load_scene_data()
 	auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(finish_time - start_time);
 	spdlog::info("Scene loaded! [{:.2f}s]", duration.count());
 
-	// Temporary write to descriptor
+	// Temporary write to descriptor.
+	// This is vallid only for now, as we don't have support for dynamic
+	// texture streaming. Everything is loaded up-front.
+	
+	// Bind uniform buffer
+	VkDescriptorBufferInfo descriptor_buffer_info = {
+		.buffer = renderer->global_uniform_data_buffer.buffer,
+		.offset = 0,
+		.range  = sizeof(Global_Uniform_Data),
+	};
+
+	// Images
+	std::vector<VkDescriptorImageInfo> image_descriptor_updates;
+	for (uint32_t image_index = 0; image_index < texture_manager->images.size(); image_index++)
 	{
-		ZoneScopedN("Temporary write to descriptor");
-
-		VkDescriptorBufferInfo descriptor_buffer_info = {
-			.buffer = renderer->per_frame_data_buffer.buffer,
-			.offset = 0,
-			.range  = sizeof(Frame_Uniform_Data),
-		};
-
-		VkDescriptorImageInfo image_info = {
-			.sampler     = texture_manager->samplers[0],
+		VkDescriptorImageInfo update_info = {
 			.imageView   = texture_manager->images[0].view,
 			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		};
-
-		VkWriteDescriptorSet descriptor_set_writes[] = {
-			{
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = renderer->per_frame_descriptor_set,
-				.dstBinding = 0,
-				.dstArrayElement = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-				.pBufferInfo = &descriptor_buffer_info,
-			},
-			{
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = renderer->per_frame_descriptor_set,
-				.dstBinding = 1,
-				.dstArrayElement = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.pImageInfo = &image_info,
-			}
-		};
-
-		vkUpdateDescriptorSets(gfx_context->device, 2, descriptor_set_writes, 0, nullptr);
+		image_descriptor_updates.push_back(update_info);
 	}
+
+	// Samplers
+	std::vector<VkDescriptorImageInfo> sampler_descriptor_updates;
+	for (uint32_t sampler_index = 0; sampler_index < texture_manager->images.size(); sampler_index++)
+	{
+		VkDescriptorImageInfo update_info = { .sampler = texture_manager->samplers[0] };
+		sampler_descriptor_updates.push_back(update_info);
+	}
+
+	VkWriteDescriptorSet descriptor_set_writes[] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet          = renderer->global_data_descriptor_set,
+			.dstBinding      = 0,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+			.pBufferInfo     = &descriptor_buffer_info,
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet          = renderer->global_data_descriptor_set,
+			.dstBinding      = 1,
+			.dstArrayElement = 0,
+			.descriptorCount = static_cast<uint32_t>(sampler_descriptor_updates.size()),
+			.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+			.pImageInfo      = sampler_descriptor_updates.data(),
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet          = renderer->global_data_descriptor_set,
+			.dstBinding      = 2,
+			.dstArrayElement = 0,
+			.descriptorCount = static_cast<uint32_t>(image_descriptor_updates.size()),
+			.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			.pImageInfo      = image_descriptor_updates.data(),
+		},
+	};
+
+	vkUpdateDescriptorSets(gfx_context->device, 3, descriptor_set_writes, 0, nullptr);
 }
 
 void renderer_dispatch()
@@ -1403,7 +1374,7 @@ void renderer_dispatch()
 
 	// This is the offset inside per frame data buffer that will be used during this frame
 	size_t current_per_frame_data_buffer_offset = clamp_size_to_alignment(
-		sizeof(Frame_Uniform_Data),
+		sizeof(Global_Uniform_Data),
 		gfx_context->physical_device_properties.properties.limits.minUniformBufferOffsetAlignment) * frame_i;
 
 	// Begin recording
@@ -1432,7 +1403,7 @@ void renderer_dispatch()
 		glm::mat4 render_matrix = projection * view * model;*/
 		glm::mat4 render_matrix = projection * view;
 
-		auto uniform_data = reinterpret_cast<Frame_Uniform_Data*>(staging_buffer_ptr + linear_allocator);
+		auto uniform_data = reinterpret_cast<Global_Uniform_Data*>(staging_buffer_ptr + linear_allocator);
 
 		uniform_data->render_matrix = render_matrix;
 
@@ -1440,12 +1411,12 @@ void renderer_dispatch()
 		VkBufferCopy region = {
 			.srcOffset = linear_allocator,
 			.dstOffset = current_per_frame_data_buffer_offset,
-			.size      = sizeof(Frame_Uniform_Data),
+			.size      = sizeof(Global_Uniform_Data),
 		};
 		vkCmdCopyBuffer(current_frame->upload_command_buffer, current_frame->staging_buffer.buffer,
-						renderer->per_frame_data_buffer.buffer, 1, &region);
+						renderer->global_uniform_data_buffer.buffer, 1, &region);
 
-		linear_allocator += sizeof(Frame_Uniform_Data);
+		linear_allocator += sizeof(Global_Uniform_Data);
 	}
 
 	command_buffer_region_end(current_frame->upload_command_buffer);
@@ -1642,7 +1613,7 @@ void renderer_dispatch()
 									VK_PIPELINE_BIND_POINT_GRAPHICS,
 									renderer->pipeline_layout,
 									0,
-									1, &renderer->per_frame_descriptor_set,
+									1, &renderer->global_data_descriptor_set,
 									1, &offset);
 		}
 
@@ -1665,6 +1636,9 @@ void renderer_dispatch()
 									 mesh.indices_offset, VK_INDEX_TYPE_UINT16);
 				vkCmdPushConstants(current_frame->draw_command_buffer, renderer->pipeline_layout,
 								   VK_SHADER_STAGE_ALL_GRAPHICS, 0, 16 * sizeof(float), &render_object.transform);
+				int texture_data = 4;
+				vkCmdPushConstants(current_frame->draw_command_buffer, renderer->pipeline_layout,
+								   VK_SHADER_STAGE_ALL_GRAPHICS, 16 * sizeof(float), 4, &texture_data);
 				vkCmdDrawIndexed(current_frame->draw_command_buffer, mesh.indices_count, 1, 0, 0, 1);
 			}
 		}

@@ -272,7 +272,10 @@ void create_device()
 		auto synchronization2 = candidate.device_features13.synchronization2;
 		auto anisotropy = candidate.device_features.samplerAnisotropy;
 		auto variable_descriptor = candidate.device_features12.descriptorBindingVariableDescriptorCount;
-		if (!dynamic_rendering || !synchronization2 || !anisotropy || !variable_descriptor)
+		auto descriptor_partially_bound = candidate.device_features12.descriptorBindingPartiallyBound;
+		auto non_uniform_indexing = candidate.device_features12.shaderSampledImageArrayNonUniformIndexing;
+		if (!dynamic_rendering || !synchronization2 || !anisotropy || !variable_descriptor
+			|| !descriptor_partially_bound || !non_uniform_indexing)
 		{
 			continue;
 		}
@@ -402,6 +405,8 @@ void create_device()
 	VkPhysicalDeviceVulkan12Features device_12_features = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.pNext = &device_13_features,
+		.shaderSampledImageArrayNonUniformIndexing = true,
+		.descriptorBindingPartiallyBound = true,
 		.descriptorBindingVariableDescriptorCount = true,
 		.timelineSemaphore = true,
 	};
