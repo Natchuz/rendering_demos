@@ -67,6 +67,7 @@ inline Mesh_Manager* mesh_manager;
 struct Render_Object
 {
 	Mesh_Manager::Id mesh_id;
+	uint32_t         material_id;
 	glm::mat4        transform;
 };
 
@@ -79,6 +80,9 @@ inline Scene_Data* scene_data;
 
 struct Texture_Manager
 {
+	static const uint32_t DEFAULT_SAMPLER = 0;
+	static const uint32_t DEFAULT_TEXTURE = 0;
+
 	// FIXME Both of these should actually _not_ be textures, but rather an slot allocator.
 	std::vector<VkSampler>            samplers;
 	std::vector<Allocated_View_Image> images;
@@ -88,6 +92,32 @@ inline Texture_Manager* texture_manager;
 
 void texture_manager_init();
 void texture_manager_deinit();
+
+// Set of textures and parameters describing material
+struct PBR_Material
+{
+	glm::vec4 albedo_color;
+	uint32_t  albedo_texture;
+	uint32_t  albedo_sampler;
+	float     metalness_factor;
+	float     roughness_factor;
+	uint32_t  metal_roughness_texture;
+	uint32_t  metal_roughness_sampler;
+	uint8_t   _padding[8];
+};
+
+struct Material_Manager
+{
+	static const uint32_t DEFAULT_MATERIAL = 0;
+
+	AllocatedBuffer           material_storage_buffer;
+	std::vector<PBR_Material> materials;
+};
+
+inline Material_Manager* material_manager;
+
+void material_manager_init();
+void material_manager_deinit();
 
 // Objects "owned by frame" for double or triple buffering
 struct Frame_Data

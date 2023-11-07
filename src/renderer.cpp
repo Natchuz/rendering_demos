@@ -167,11 +167,83 @@ void texture_manager_init()
 	VkSampler default_sampler;
 	vkCreateSampler(gfx_context->device, &default_sampler_create_info, nullptr, &default_sampler);
 	texture_manager->samplers.push_back(default_sampler);
+
+	// Create default texture
+	Allocated_View_Image view_image; // What we will be allocating
+
+	VkImageCreateInfo image_create_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType     = VK_IMAGE_TYPE_2D,
+		.format        = VK_FORMAT_R8G8B8A8_SRGB,
+		.extent        = { 1, 1, 1},
+		.mipLevels     = 1,
+		.arrayLayers   = 1,
+		.samples       = VK_SAMPLE_COUNT_1_BIT,
+		.tiling        = VK_IMAGE_TILING_OPTIMAL,
+		.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+
+	VmaAllocationCreateInfo allocation_create_info = { .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, };
+
+	VmaAllocationInfo allocation_info;
+	vmaCreateImage(gfx_context->vma_allocator, &image_create_info,
+				   &allocation_create_info,&view_image.image,
+				   &view_image.allocation, &allocation_info);
+	name_object(view_image.image, "Default texture");
+
+	// Create default image view
+	create_default_image_view(gfx_context->device, image_create_info, view_image.image, nullptr, &view_image.view);
+	name_object(view_image.view, "Default texture's view");
+
+	texture_manager->images.push_back(view_image);
 }
 
 void texture_manager_deinit()
 {
 	delete texture_manager;
+}
+
+void material_manager_init()
+{
+	material_manager = new Material_Manager{};
+	material_manager->materials.reserve(1000);
+
+	// Allocate material buffer
+	VkBufferCreateInfo buffer_create_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size  = 40000, // 40 kb = sizeof(PBR_MATERIAL) * 1000
+		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	};
+
+	VmaAllocationCreateInfo vma_buffer_create_info = {
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+	};
+
+	vmaCreateBuffer(gfx_context->vma_allocator,
+					&buffer_create_info,
+					&vma_buffer_create_info,
+					&material_manager->material_storage_buffer.buffer,
+					&material_manager->material_storage_buffer.allocation,
+					nullptr);
+	name_object(material_manager->material_storage_buffer.buffer, "Material storage buffer");
+
+	// Default material
+	material_manager->materials.push_back({
+		.albedo_color            = { 0.0f, 0.0f, 0.0f, 1.0f},
+		.albedo_texture          = Texture_Manager::DEFAULT_TEXTURE,
+		.albedo_sampler          = Texture_Manager::DEFAULT_SAMPLER,
+		.metalness_factor        = 1.0f,
+		.roughness_factor        = 1.0f,
+		.metal_roughness_texture = Texture_Manager::DEFAULT_TEXTURE,
+		.metal_roughness_sampler = Texture_Manager::DEFAULT_SAMPLER,
+	});
+}
+
+void material_manager_deinit()
+{
+	delete material_manager;
 }
 
 void renderer_init()
@@ -181,6 +253,7 @@ void renderer_init()
 	scene_data = new Scene_Data;
 	mesh_manager_init();
 	texture_manager_init();
+	material_manager_init();
 	depth_buffer_create();
 
 	renderer->descriptor_set_allocator = {};
@@ -437,17 +510,24 @@ void renderer_create_global_uniforms()
 				.descriptorCount = 5000, // Maximum 5000 textures
 				.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT,
 			},
+			{ // Material buffer
+				.binding         = 3,
+				.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.descriptorCount = 1,
+				.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT,
+			}
 		};
 
 		VkDescriptorBindingFlags flags[] = {
 			0,
 			VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
 			VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
+			0,
 		};
 
 		VkDescriptorSetLayoutBindingFlagsCreateInfo flags_create_info = {
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-			.bindingCount  = 3,
+			.bindingCount  = 4,
 			.pBindingFlags = flags,
 		};
 
@@ -455,7 +535,7 @@ void renderer_create_global_uniforms()
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.pNext = &flags_create_info,
 			.flags        = 0,
-			.bindingCount = 3,
+			.bindingCount = 4,
 			.pBindings    = bindings,
 		};
 
@@ -845,199 +925,6 @@ void load_scene_data()
 
 	auto upload_writer = Mapped_Buffer_Writer(renderer->main_upload_heap_ptr);
 
-	std::vector<VkBufferCopy> vertex_copies;
-	std::vector<VkBufferCopy> indices_copies;
-
-	// This maps single GLTF mesh into set of our meshes
-	// (each mesh might have multiple primitives, which we consider separate meshes)
-	std::unordered_map<size_t, std::vector<Mesh_Manager::Id>> asset_map_meshes;
-
-	for (size_t mesh_index = 0; mesh_index < asset->meshes.size(); mesh_index++)
-	{
-		auto& mesh = asset->meshes[mesh_index];
-		asset_map_meshes[mesh_index] = {}; // Initialize primitives list
-
-		// Each primitive will be separate mesh
-		for (auto& primitive : mesh.primitives)
-		{
-			// Right now, only handle triangles (conversion from other types will be implemented later)
-			if (primitive.type != PrimitiveType::Triangles)
-				throw std::runtime_error("GLTF Problem");
-
-			// We don't generate indices as of now
-			if (!primitive.indicesAccessor.has_value())
-				throw std::runtime_error("GLTF Problem");
-
-			// Check if all required attributes are present
-			bool attributes_present =
-				primitive.attributes.contains("POSITION") &&
-				primitive.attributes.contains("NORMAL") &&
-				primitive.attributes.contains("TEXCOORD_0");
-
-			bool has_tangent = primitive.attributes.contains("TANGENT");
-
-			if (!attributes_present)
-				throw std::runtime_error("GLTF Problem");
-
-			if (!has_tangent)
-			{
-				spdlog::info("Missing tangent!"); // Todo better logging
-			}
-
-			auto indices_accessor  = asset->accessors[primitive.indicesAccessor.value()];
-			auto position_accessor = asset->accessors[primitive.attributes["POSITION"]];
-			auto normal_accessor   = asset->accessors[primitive.attributes["NORMAL"]];
-			auto tangent_accessor  = asset->accessors[primitive.attributes["TANGENT"]];
-			auto texcoord_accessor = asset->accessors[primitive.attributes["TEXCOORD_0"]];
-
-			// So eh, apparently, texcoord can be float, uint8_t or uint16_t... we might need to convert.
-			if (texcoord_accessor.componentType != ComponentType::Float)
-				throw std::runtime_error("GLTF Problem");
-
-			// Also, indices can also be of multiple types...
-			if (indices_accessor.componentType != ComponentType::UnsignedShort)
-				throw std::runtime_error("GLTF Problem");
-
-			// All attributes accessors has matching counts. This is enforced by the specs
-			size_t attr_count = position_accessor.count;
-
-			// Save offset of vertex region
-			VkDeviceSize vertex_src_offset = upload_writer.offset();
-
-			for (size_t offset = 0; offset < attr_count; offset++)
-			{
-				auto p = getAccessorElement<glm::vec3>(*asset, position_accessor, offset);
-				auto n = getAccessorElement<glm::vec3>(*asset, normal_accessor,   offset);
-				auto tx= getAccessorElement<glm::vec2>(*asset, texcoord_accessor, offset);
-
-				auto tg = (has_tangent)
-					? getAccessorElement<glm::vec4>(*asset, tangent_accessor,  offset)
-					: glm::vec4(0, 0, 0, 0);
-
-				auto attr = { p.x, p.y, p.z, n.x, n.y, n.z, tg.x, tg.y, tg.z, tg.w, tx.x, 1-tx.y }; // Vulkan UV fix
-				upload_writer.write(attr.begin(), 12 * sizeof(float));
-			}
-
-			// Save offset of indices region
-			VkDeviceSize indices_src_offset = upload_writer.offset();
-
-			// Copy indices
-			copyFromAccessor<uint16_t>(*asset, indices_accessor, upload_writer.offset_ptr);
-			upload_writer.advance(indices_accessor.count * sizeof(uint16_t));
-
-			// Allocate mesh and indices
-			VkResult alloc_result;
-			VmaVirtualAllocationCreateInfo vertex_allocation_info = { .size = attr_count * sizeof(float) * 12 };
-			VmaVirtualAllocation vertex_allocation;
-			VkDeviceSize vertex_dst_offset;
-			alloc_result = vmaVirtualAllocate(mesh_manager->vertex_sub_allocator,
-											  &vertex_allocation_info, &vertex_allocation,
-											  &vertex_dst_offset);
-			if (alloc_result != VK_SUCCESS)
-				throw std::runtime_error("GLTF Problem");
-
-			VmaVirtualAllocationCreateInfo indices_allocation_info = { .size = indices_accessor.count * sizeof(uint16_t) };
-			VmaVirtualAllocation indices_allocation;
-			VkDeviceSize indices_dst_offset;
-			alloc_result = vmaVirtualAllocate(mesh_manager->indices_sub_allocator,
-											  &indices_allocation_info,&indices_allocation,
-											  &indices_dst_offset);
-			if (alloc_result != VK_SUCCESS)
-				throw std::runtime_error("GLTF Problem");
-
-			Mesh_Manager::Mesh_Description mesh_description = {
-				.vertex_offset  = vertex_dst_offset,
-				.vertex_count   = static_cast<uint32_t>(attr_count),
-				.indices_offset = indices_dst_offset,
-				.indices_count  = static_cast<uint32_t>(indices_accessor.count),
-				.vertex_allocation  = vertex_allocation,
-				.indices_allocation = indices_allocation,
-			};
-
-			Mesh_Manager::Id mesh_id = mesh_manager->next_index++;
-			mesh_manager->meshes[mesh_id] = mesh_description;
-
-			vertex_copies.push_back({
-				.srcOffset = vertex_src_offset,
-				.dstOffset = vertex_dst_offset,
-				.size      = vertex_allocation_info.size,
-			});
-
-			indices_copies.push_back({
-				.srcOffset = indices_src_offset,
-				.dstOffset = indices_dst_offset,
-				.size      = indices_allocation_info.size,
-			});
-
-			asset_map_meshes[mesh_index].push_back(mesh_id);
-		}
-	}
-
-	// Now, let's start traversing entire scene and node hierarchy
-
-	struct Enqueued_Node
-	{
-		glm::mat4 parent_transform;
-		size_t    node_id;
-	};
-	std::deque<Enqueued_Node> nodes_queue;
-
-	// Enqueue root nodes from scenes for traversal
-	for (auto& scene : asset->scenes)
-	{
-		for (auto& node_id : scene.nodeIndices)
-		{
-			nodes_queue.push_back({
-				.parent_transform = glm::translate(glm::mat4 {1.0f}, glm::vec3 {0.0f, 0.0f, 0.0f}),
-				.node_id = node_id,
-			});
-		}
-	}
-
-	while (!nodes_queue.empty())
-	{
-		Enqueued_Node enqueued_node = nodes_queue.front();
-		Node node = asset->nodes[enqueued_node.node_id];
-
-		// Compose matrix if needed
-		glm::mat4 transform_matrix;
-		if (std::holds_alternative<Node::TransformMatrix>(node.transform))
-		{
-			transform_matrix = glm::make_mat4(std::get<Node::TransformMatrix>(node.transform).data());
-		}
-		else
-		{
-			Node::TRS trs = std::get<Node::TRS>(node.transform);
-			auto t = glm::translate(glm::mat4 { 1.0f }, glm::make_vec3(trs.translation.data()));
-			auto r = glm::mat4_cast(glm::make_quat(trs.rotation.data()));
-			auto s = glm::scale(glm::mat4 { 1.0f }, glm::make_vec3(trs.scale.data()));
-			transform_matrix = t * r * s;
-		}
-
-		for (auto& child_id : node.children)
-		{
-			nodes_queue.push_back({
-				.parent_transform = transform_matrix * enqueued_node.parent_transform,
-				.node_id = child_id,
-			});
-		}
-
-		// Finally, spawn scene objects
-		if (node.meshIndex.has_value())
-		{
-			for (Mesh_Manager::Id& mesh_id : asset_map_meshes[node.meshIndex.value()])
-			{
-				Render_Object render_object = {
-					.mesh_id   = mesh_id,
-					.transform = transform_matrix,
-				};
-				scene_data->render_objects.push_back(render_object);
-			}
-		}
-
-		nodes_queue.pop_front();
-	}
-
 	// Texture and sampler data loading into texture_manager.
 	// This design might seem weird, but gathering all textures in one place opens doors to easier migration to
 	// bindless in the future.
@@ -1050,6 +937,14 @@ void load_scene_data()
 
 	std::vector<Image_Upload>          image_uploads;
 	std::unordered_map<size_t, size_t> asset_map_images; // Maps index of GLTF image to index in texture_manager
+
+	// Upload default texture when we're at this
+	{
+		uint8_t pixel_data[] = { 255, 255, 255, 255 };
+		upload_writer.align_next(4); // Offset need to be multiple of texel size (4)
+		VkDeviceSize offset = upload_writer.write(pixel_data, 4);
+		image_uploads.push_back({Texture_Manager::DEFAULT_TEXTURE, 1, 1, offset, });
+	}
 
 	for (size_t asset_image_index = 0; asset_image_index < asset->images.size(); asset_image_index++)
 	{
@@ -1102,7 +997,7 @@ void load_scene_data()
 
 		// Push to upload heap and enqueue for upload
 		upload_writer.align_next(4); // Offset need to be multiple of texel size (4)
-		VkDeviceSize offset = upload_writer.write(pixels, height * width * channels);
+		VkDeviceSize offset = upload_writer.write(pixels, height * width * 4);
 		image_uploads.push_back({
 			.image_index   = image_index,
 			.height        = height,
@@ -1171,7 +1066,288 @@ void load_scene_data()
 		// Put in texture_manager
 		texture_manager->samplers.push_back(our_sampler);
 		size_t sampler_index = texture_manager->samplers.size() - 1;
-		asset_map_images[asset_sampler_index] = sampler_index;
+		asset_map_samplers[asset_sampler_index] = sampler_index;
+	}
+
+	// Material parsing.
+
+	std::unordered_map<size_t, size_t> asset_map_materials; // Maps index of GLTF image to index in material_manager
+
+	for (size_t asset_material_index = 0; asset_material_index < asset->materials.size(); asset_material_index++) {
+		auto &material = asset->materials[asset_material_index];
+
+		if (!material.pbrData.has_value())
+			throw std::runtime_error("GLTF Problem");
+		PBRData& pbr_data = material.pbrData.value();
+
+		uint32_t albedo_texture          = Texture_Manager::DEFAULT_TEXTURE;
+		uint32_t albedo_sampler          = Texture_Manager::DEFAULT_SAMPLER;
+		uint32_t metal_roughness_texture = Texture_Manager::DEFAULT_TEXTURE;
+		uint32_t metal_roughness_sampler = Texture_Manager::DEFAULT_SAMPLER;
+
+		// Find base color texture and sampler
+		if (pbr_data.baseColorTexture.has_value())
+		{
+			auto& base_color_texture = pbr_data.baseColorTexture.value();
+
+			if (base_color_texture.texCoordIndex != 0)
+				throw std::runtime_error("GLTF Problem");
+
+			auto image_index = asset->textures[base_color_texture.textureIndex].imageIndex;
+			if (!image_index.has_value())
+				throw std::runtime_error("GLTF Problem");
+			albedo_texture = asset_map_images[image_index.value()];
+
+			auto sampler_index = asset->textures[base_color_texture.textureIndex].samplerIndex;
+			if (sampler_index.has_value())
+			{
+				albedo_sampler = asset_map_samplers[sampler_index.value()];
+			}
+		}
+
+		// Find metalness+roughness texture and sampler
+		if (pbr_data.metallicRoughnessTexture.has_value())
+		{
+			auto& mr_texture = pbr_data.metallicRoughnessTexture.value();
+
+			if (mr_texture.texCoordIndex != 0)
+				throw std::runtime_error("GLTF Problem");
+
+			auto image_index = asset->textures[mr_texture.textureIndex].imageIndex;
+			if (!image_index.has_value())
+				throw std::runtime_error("GLTF Problem");
+			metal_roughness_texture = asset_map_images[image_index.value()];
+
+			auto sampler_index = asset->textures[mr_texture.textureIndex].samplerIndex;
+			if (sampler_index.has_value())
+			{
+				metal_roughness_sampler = asset_map_samplers[sampler_index.value()];
+			}
+		}
+
+		PBR_Material pbr_material = {
+			.albedo_color            = glm::make_vec4(pbr_data.baseColorFactor.data()),
+			.albedo_texture          = albedo_texture,
+			.albedo_sampler          = albedo_sampler,
+			.metalness_factor        = pbr_data.metallicFactor,
+			.roughness_factor        = pbr_data.roughnessFactor,
+			.metal_roughness_texture = metal_roughness_texture,
+			.metal_roughness_sampler = metal_roughness_sampler,
+		};
+
+		// Put it in material manager
+		material_manager->materials.push_back(pbr_material);
+		size_t material_index = material_manager->materials.size() - 1;
+		asset_map_materials[asset_material_index] = material_index;
+	}
+
+	uint32_t material_data_size = material_manager->materials.size() * sizeof(PBR_Material);
+	VkDeviceSize material_data_offset = upload_writer.write(material_manager->materials.data(), material_data_size);
+
+	// Meshes parsing and loading
+
+	std::vector<VkBufferCopy> vertex_copies;
+	std::vector<VkBufferCopy> indices_copies;
+
+	// This maps single GLTF mesh into set of our meshes
+	// (each mesh might have multiple primitives, which we consider separate meshes)
+	struct Primitive
+	{
+		Mesh_Manager::Id mesh_id;
+		uint32_t         material_id;
+	};
+
+	std::unordered_map<size_t, std::vector<Primitive>> asset_map_meshes;
+
+	for (size_t mesh_index = 0; mesh_index < asset->meshes.size(); mesh_index++)
+	{
+		auto& mesh = asset->meshes[mesh_index];
+		asset_map_meshes[mesh_index] = {}; // Initialize primitives list
+
+		// Each primitive will be separate mesh
+		for (auto& primitive : mesh.primitives)
+		{
+			// Right now, only handle triangles (conversion from other types will be implemented later)
+			if (primitive.type != PrimitiveType::Triangles)
+				throw std::runtime_error("GLTF Problem");
+
+			// We don't generate indices as of now
+			if (!primitive.indicesAccessor.has_value())
+				throw std::runtime_error("GLTF Problem");
+
+			// Check if all required attributes are present
+			bool attributes_present =
+				primitive.attributes.contains("POSITION") &&
+				primitive.attributes.contains("NORMAL") &&
+				primitive.attributes.contains("TEXCOORD_0");
+
+			bool has_tangent = primitive.attributes.contains("TANGENT");
+
+			if (!attributes_present)
+				throw std::runtime_error("GLTF Problem");
+
+			if (!has_tangent)
+			{
+				spdlog::info("Missing tangent!"); // Todo better logging
+			}
+
+			auto indices_accessor  = asset->accessors[primitive.indicesAccessor.value()];
+			auto position_accessor = asset->accessors[primitive.attributes["POSITION"]];
+			auto normal_accessor   = asset->accessors[primitive.attributes["NORMAL"]];
+			auto tangent_accessor  = asset->accessors[primitive.attributes["TANGENT"]];
+			auto texcoord_accessor = asset->accessors[primitive.attributes["TEXCOORD_0"]];
+
+			// So eh, apparently, texcoord can be float, uint8_t or uint16_t... we might need to convert.
+			if (texcoord_accessor.componentType != ComponentType::Float)
+				throw std::runtime_error("GLTF Problem");
+
+			// Also, indices can also be of multiple types...
+			if (indices_accessor.componentType != ComponentType::UnsignedShort)
+				throw std::runtime_error("GLTF Problem");
+
+			// All attributes accessors has matching counts. This is enforced by the specs
+			size_t attr_count = position_accessor.count;
+
+			// Save offset of vertex region
+			VkDeviceSize vertex_src_offset = upload_writer.offset();
+
+			for (size_t offset = 0; offset < attr_count; offset++)
+			{
+				auto p = getAccessorElement<glm::vec3>(*asset, position_accessor, offset);
+				auto n = getAccessorElement<glm::vec3>(*asset, normal_accessor,   offset);
+				auto tx= getAccessorElement<glm::vec2>(*asset, texcoord_accessor, offset);
+
+				auto tg = (has_tangent)
+						  ? getAccessorElement<glm::vec4>(*asset, tangent_accessor,  offset)
+						  : glm::vec4(0, 0, 0, 0);
+
+				auto attr = { p.x, p.y, p.z, n.x, n.y, n.z, tg.x, tg.y, tg.z, tg.w, tx.x, tx.y }; // Vulkan UV fix
+				upload_writer.write(attr.begin(), 12 * sizeof(float));
+			}
+
+			// Save offset of indices region
+			VkDeviceSize indices_src_offset = upload_writer.offset();
+
+			// Copy indices
+			copyFromAccessor<uint16_t>(*asset, indices_accessor, upload_writer.offset_ptr);
+			upload_writer.advance(indices_accessor.count * sizeof(uint16_t));
+
+			// Allocate mesh and indices
+			VkResult alloc_result;
+			VmaVirtualAllocationCreateInfo vertex_allocation_info = { .size = attr_count * sizeof(float) * 12 };
+			VmaVirtualAllocation vertex_allocation;
+			VkDeviceSize vertex_dst_offset;
+			alloc_result = vmaVirtualAllocate(mesh_manager->vertex_sub_allocator,
+											  &vertex_allocation_info, &vertex_allocation,
+											  &vertex_dst_offset);
+			if (alloc_result != VK_SUCCESS)
+				throw std::runtime_error("GLTF Problem");
+
+			VmaVirtualAllocationCreateInfo indices_allocation_info = { .size = indices_accessor.count * sizeof(uint16_t) };
+			VmaVirtualAllocation indices_allocation;
+			VkDeviceSize indices_dst_offset;
+			alloc_result = vmaVirtualAllocate(mesh_manager->indices_sub_allocator,
+											  &indices_allocation_info,&indices_allocation,
+											  &indices_dst_offset);
+			if (alloc_result != VK_SUCCESS)
+				throw std::runtime_error("GLTF Problem");
+
+			Mesh_Manager::Mesh_Description mesh_description = {
+				.vertex_offset  = vertex_dst_offset,
+				.vertex_count   = static_cast<uint32_t>(attr_count),
+				.indices_offset = indices_dst_offset,
+				.indices_count  = static_cast<uint32_t>(indices_accessor.count),
+				.vertex_allocation  = vertex_allocation,
+				.indices_allocation = indices_allocation,
+			};
+
+			Mesh_Manager::Id mesh_id = mesh_manager->next_index++;
+			mesh_manager->meshes[mesh_id] = mesh_description;
+
+			vertex_copies.push_back({
+										.srcOffset = vertex_src_offset,
+										.dstOffset = vertex_dst_offset,
+										.size      = vertex_allocation_info.size,
+									});
+
+			indices_copies.push_back({
+										 .srcOffset = indices_src_offset,
+										 .dstOffset = indices_dst_offset,
+										 .size      = indices_allocation_info.size,
+									 });
+
+			// Get material index
+			uint32_t material_id = (primitive.materialIndex.has_value())
+				? asset_map_materials[primitive.materialIndex.value()] : Material_Manager::DEFAULT_MATERIAL;
+
+			asset_map_meshes[mesh_index].push_back({ .mesh_id = mesh_id, .material_id = material_id });
+		}
+	}
+
+	// Now, let's start traversing entire scene and node hierarchy
+
+	struct Enqueued_Node
+	{
+		glm::mat4 parent_transform;
+		size_t    node_id;
+	};
+	std::deque<Enqueued_Node> nodes_queue;
+
+	// Enqueue root nodes from scenes for traversal
+	for (auto& scene : asset->scenes)
+	{
+		for (auto& node_id : scene.nodeIndices)
+		{
+			nodes_queue.push_back({
+									  .parent_transform = glm::translate(glm::mat4 {1.0f}, glm::vec3 {0.0f, 0.0f, 0.0f}),
+									  .node_id = node_id,
+								  });
+		}
+	}
+
+	while (!nodes_queue.empty())
+	{
+		Enqueued_Node enqueued_node = nodes_queue.front();
+		Node node = asset->nodes[enqueued_node.node_id];
+
+		// Compose matrix if needed
+		glm::mat4 transform_matrix;
+		if (std::holds_alternative<Node::TransformMatrix>(node.transform))
+		{
+			transform_matrix = glm::make_mat4(std::get<Node::TransformMatrix>(node.transform).data());
+		}
+		else
+		{
+			Node::TRS trs = std::get<Node::TRS>(node.transform);
+			auto t = glm::translate(glm::mat4 { 1.0f }, glm::make_vec3(trs.translation.data()));
+			auto r = glm::mat4_cast(glm::make_quat(trs.rotation.data()));
+			auto s = glm::scale(glm::mat4 { 1.0f }, glm::make_vec3(trs.scale.data()));
+			transform_matrix = t * r * s;
+		}
+
+		for (auto& child_id : node.children)
+		{
+			nodes_queue.push_back({
+									  .parent_transform = transform_matrix * enqueued_node.parent_transform,
+									  .node_id = child_id,
+								  });
+		}
+
+		// Finally, spawn scene objects
+		if (node.meshIndex.has_value())
+		{
+			for (Primitive& primitive : asset_map_meshes[node.meshIndex.value()])
+			{
+				Render_Object render_object = {
+					.mesh_id     = primitive.mesh_id,
+					.material_id = primitive.material_id,
+					.transform   = transform_matrix,
+				};
+				scene_data->render_objects.push_back(render_object);
+			}
+		}
+
+		nodes_queue.pop_front();
 	}
 
 	{
@@ -1187,6 +1363,14 @@ void load_scene_data()
 						mesh_manager->vertex_buffer.buffer, vertex_copies.size(), vertex_copies.data());
 		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
 						mesh_manager->indices_buffer.buffer, indices_copies.size(), indices_copies.data());
+
+		VkBufferCopy material_copy = {
+			.srcOffset = material_data_offset,
+			.dstOffset = 0,
+			.size      = material_data_size,
+		};
+		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
+						material_manager->material_storage_buffer.buffer, 1, &material_copy);
 
 		// Enqueue upload of all pending textures
 		for (auto& image_upload : image_uploads)
@@ -1285,22 +1469,11 @@ void load_scene_data()
 	// texture streaming. Everything is loaded up-front.
 	
 	// Bind uniform buffer
-	VkDescriptorBufferInfo descriptor_buffer_info = {
+	VkDescriptorBufferInfo global_uniform_descriptor = {
 		.buffer = renderer->global_uniform_data_buffer.buffer,
 		.offset = 0,
 		.range  = sizeof(Global_Uniform_Data),
 	};
-
-	// Images
-	std::vector<VkDescriptorImageInfo> image_descriptor_updates;
-	for (uint32_t image_index = 0; image_index < texture_manager->images.size(); image_index++)
-	{
-		VkDescriptorImageInfo update_info = {
-			.imageView   = texture_manager->images[0].view,
-			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		};
-		image_descriptor_updates.push_back(update_info);
-	}
 
 	// Samplers
 	std::vector<VkDescriptorImageInfo> sampler_descriptor_updates;
@@ -1310,6 +1483,24 @@ void load_scene_data()
 		sampler_descriptor_updates.push_back(update_info);
 	}
 
+	// Images
+	std::vector<VkDescriptorImageInfo> image_descriptor_updates;
+	for (uint32_t image_index = 0; image_index < texture_manager->images.size(); image_index++)
+	{
+		VkDescriptorImageInfo update_info = {
+			.imageView   = texture_manager->images[image_index].view,
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		};
+		image_descriptor_updates.push_back(update_info);
+	}
+
+	// Bind material storage buffer
+	VkDescriptorBufferInfo material_storage_descriptor = {
+		.buffer = material_manager->material_storage_buffer.buffer,
+		.offset = 0,
+		.range  = 40000,
+	};
+
 	VkWriteDescriptorSet descriptor_set_writes[] = {
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1318,7 +1509,7 @@ void load_scene_data()
 			.dstArrayElement = 0,
 			.descriptorCount = 1,
 			.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-			.pBufferInfo     = &descriptor_buffer_info,
+			.pBufferInfo     = &global_uniform_descriptor,
 		},
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1338,9 +1529,18 @@ void load_scene_data()
 			.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 			.pImageInfo      = image_descriptor_updates.data(),
 		},
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet          = renderer->global_data_descriptor_set,
+			.dstBinding      = 3,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pBufferInfo     = &material_storage_descriptor,
+		},
 	};
 
-	vkUpdateDescriptorSets(gfx_context->device, 3, descriptor_set_writes, 0, nullptr);
+	vkUpdateDescriptorSets(gfx_context->device, 4, descriptor_set_writes, 0, nullptr);
 }
 
 void renderer_dispatch()
@@ -1554,7 +1754,7 @@ void renderer_dispatch()
 	{
 		ZoneScopedN("Main draw pass");
 
-		VkClearValue color_clear_value = {.color = {.float32 = {0, 0, 0.2, 1}}};
+		VkClearValue color_clear_value = {.color = {.float32 = {0.2, 0.2, 0.2, 1}}};
 
 		VkRenderingAttachmentInfo swapchain_attachment_info = {
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -1636,9 +1836,8 @@ void renderer_dispatch()
 									 mesh.indices_offset, VK_INDEX_TYPE_UINT16);
 				vkCmdPushConstants(current_frame->draw_command_buffer, renderer->pipeline_layout,
 								   VK_SHADER_STAGE_ALL_GRAPHICS, 0, 16 * sizeof(float), &render_object.transform);
-				int texture_data = 4;
 				vkCmdPushConstants(current_frame->draw_command_buffer, renderer->pipeline_layout,
-								   VK_SHADER_STAGE_ALL_GRAPHICS, 16 * sizeof(float), 4, &texture_data);
+								   VK_SHADER_STAGE_ALL_GRAPHICS, 16 * sizeof(float), 4, &render_object.material_id);
 				vkCmdDrawIndexed(current_frame->draw_command_buffer, mesh.indices_count, 1, 0, 0, 1);
 			}
 		}
