@@ -2,6 +2,9 @@
 
 **README WIP**
 
-In this repo I'd like to build a renderer (in vuklan, dx12 possibly later) showcasing modern techniques I've already learned and will learn onward.
+![f](cover.jpg)
 
-Currently stuck learning Vulkan, nothing besides blank screen here (with number of validation layers complaining about something).
+Very simple, personal Vulkan renderer.
+Aiming for PBR in the near future.
+
+No reasons to provide compile instructions now, there is nothing special in this renderer for anyone to care right now.
