@@ -157,10 +157,12 @@ void texture_manager_init()
 		.addressModeV     = VK_SAMPLER_ADDRESS_MODE_REPEAT, // and this.
 		.addressModeW     = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 		.mipLodBias       = 0,
-		.anisotropyEnable = false,
+		.anisotropyEnable = true,
 		.maxAnisotropy    = 16,
 		.compareEnable    = false,
 		.compareOp        = VK_COMPARE_OP_NEVER,
+		.minLod           = 0,
+		.maxLod           = 10,
 		.borderColor      = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
 		.unnormalizedCoordinates = false,
 	};
@@ -180,7 +182,7 @@ void texture_manager_init()
 		.arrayLayers   = 1,
 		.samples       = VK_SAMPLE_COUNT_1_BIT,
 		.tiling        = VK_IMAGE_TILING_OPTIMAL,
-		.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 		.sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
@@ -969,11 +971,11 @@ void load_scene_data()
 			.imageType     = VK_IMAGE_TYPE_2D,
 			.format        = VK_FORMAT_R8G8B8A8_SRGB,
 			.extent        = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1},
-			.mipLevels     = 1,
+			.mipLevels     = width == 4 ? 1u : 10u,
 			.arrayLayers   = 1,
 			.samples       = VK_SAMPLE_COUNT_1_BIT,
 			.tiling        = VK_IMAGE_TILING_OPTIMAL,
-			.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 			.sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		};
@@ -1043,6 +1045,8 @@ void load_scene_data()
 						 ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
 		}
 
+		// TODO FIX this doesn't work!!! Sampler selection in shader is broken. I'll leave anisotropy off and
+		// low mip max lod for debug purposes
 		VkSamplerCreateInfo sampler_create_info = {
 			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
 			.magFilter        = mag_filter,
@@ -1377,7 +1381,9 @@ void load_scene_data()
 		{
 			auto vk_image = texture_manager->images[image_upload.image_index].image;
 
-			// Transition to copy layout
+			uint32_t mip_levels = image_upload.height == 1 || image_upload.height == 4 ? 1 : 10;
+
+			// Transition first mip to copy layout
 			VkImageMemoryBarrier to_transfer_dst_barrier = {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 				.srcAccessMask = 0,
@@ -1415,18 +1421,119 @@ void load_scene_data()
 			vkCmdCopyBufferToImage(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
 								   vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-			// Immediately transition into proper layout
-			VkImageMemoryBarrier from_transform_transition_barrier = {
+			// Await transfer for mip 0
+			VkImageMemoryBarrier await_transfer_barrier = {
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
 				.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 				.image         = vk_image,
 				.subresourceRange = {
 					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
 					.baseMipLevel   = 0,
 					.levelCount     = 1,
+					.baseArrayLayer = 0,
+					.layerCount     = 1,
+				},
+			};
+			vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+								 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+								 &await_transfer_barrier);
+
+			// Generate mipmaps
+			for (uint32_t dst_mip = 1; dst_mip < mip_levels; dst_mip++)
+			{
+				// Move dst mip to trransfer dst
+				VkImageMemoryBarrier mip_to_transfer_dst = {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+					.srcAccessMask = 0,
+					.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+					.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+					.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					.image         = vk_image,
+					.subresourceRange = {
+						.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+						.baseMipLevel   = dst_mip,
+						.levelCount     = 1,
+						.baseArrayLayer = 0,
+						.layerCount     = 1,
+					},
+				};
+				vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+									 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+									 &mip_to_transfer_dst);
+
+				VkImageBlit2 regions = {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+					.srcSubresource = {
+						.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+						.mipLevel       = dst_mip - 1,
+						.baseArrayLayer = 0,
+						.layerCount     = 1,
+					},
+					.srcOffsets = {
+						{ 0, 0, 0 },
+						{ (image_upload.width >> dst_mip - 1), (image_upload.width >> dst_mip - 1), 1 }
+					},
+					.dstSubresource = {
+						.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+						.mipLevel       = dst_mip,
+						.baseArrayLayer = 0,
+						.layerCount     = 1,
+					},
+					.dstOffsets = {
+						{ 0, 0, 0 },
+						{ (image_upload.width >> dst_mip), (image_upload.width >> dst_mip), 1 }
+					},
+				};
+
+				VkBlitImageInfo2 blit_info = {
+					.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+					.srcImage       = vk_image,
+					.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					.dstImage       = vk_image,
+					.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					.regionCount    = 1,
+					.pRegions       = &regions,
+					.filter         = VK_FILTER_LINEAR,
+				};
+
+				vkCmdBlitImage2(renderer->upload_command_buffer, &blit_info);
+
+				// Move dst mip to trransfer src
+				VkImageMemoryBarrier mip_to_transfer_src = {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+					.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+					.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+					.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					.image         = vk_image,
+					.subresourceRange = {
+						.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+						.baseMipLevel   = dst_mip,
+						.levelCount     = 1,
+						.baseArrayLayer = 0,
+						.layerCount     = 1,
+					},
+				};
+				vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+									 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+									 &mip_to_transfer_src);
+			}
+
+			// Immediately transition into proper layout
+			VkImageMemoryBarrier from_transform_transition_barrier = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				.image         = vk_image,
+				.subresourceRange = {
+					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel   = 0,
+					.levelCount     = mip_levels,
 					.baseArrayLayer = 0,
 					.layerCount     = 1,
 				},
