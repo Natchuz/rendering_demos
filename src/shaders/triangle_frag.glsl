@@ -76,7 +76,9 @@ void main()
 		float r_min = 0.01;
 		float r0    = light.radius;
 
-		attenuation += pow(r0 / max(r, r_min), 2) * light.intensity * clamp(dot(in_normal, l), 0, 1);
+		float f_win = pow(clamp(1 - pow(r / 100 , 4), 0, 1), 2);
+
+		attenuation += pow(r0 / max(r, r_min), 2) * f_win * light.intensity * clamp(dot(in_normal, l), 0, 1);
 	}
 
 	vec4 color = albedo_color * clamp(attenuation, 0, 1);
