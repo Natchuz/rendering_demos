@@ -252,7 +252,7 @@ void renderer_init()
 {
 	renderer = new Renderer;
 
-	scene_data = new Scene_Data;
+	scene_data = new Scene_Data { .sun = {glm::vec3(0, 0, 1), 1.0f } };
 	mesh_manager_init();
 	texture_manager_init();
 	material_manager_init();
@@ -1676,8 +1676,7 @@ void renderer_dispatch()
 		vkWaitSemaphores(gfx_context->device, &wait_info, UINT64_MAX);
 	}
 
-	char* staging_buffer_ptr = static_cast<char *>(current_frame->staging_buffer_ptr);
-	size_t linear_allocator = 0;
+	Mapped_Buffer_Writer staging_buffer_writer(current_frame->staging_buffer_ptr);
 
 	// This is the offset inside per frame data buffer that will be used during this frame
 	size_t current_per_frame_data_buffer_offset = clamp_size_to_alignment(
@@ -1702,28 +1701,22 @@ void renderer_dispatch()
 			1280.f / 720.f,
 			0.1f,
 			200.0f);
-		// projection[1][1] *= -1;
-		/*glm::mat4 model = glm::rotate(
-			glm::mat4{1.0f},
-			rotation,
-			glm::vec3(0, 1, 0));
-		glm::mat4 render_matrix = projection * view * model;*/
 		glm::mat4 render_matrix = projection * view;
 
-		auto uniform_data = reinterpret_cast<Global_Uniform_Data*>(staging_buffer_ptr + linear_allocator);
+		Global_Uniform_Data uniform_data = {};
+		uniform_data.render_matrix = render_matrix;
+		uniform_data.sun           = scene_data->sun;
 
-		uniform_data->render_matrix = render_matrix;
+		auto offset = staging_buffer_writer.write(&uniform_data, sizeof(Global_Uniform_Data));
 
 		// Upload
 		VkBufferCopy region = {
-			.srcOffset = linear_allocator,
+			.srcOffset = offset,
 			.dstOffset = current_per_frame_data_buffer_offset,
 			.size      = sizeof(Global_Uniform_Data),
 		};
 		vkCmdCopyBuffer(current_frame->upload_command_buffer, current_frame->staging_buffer.buffer,
 						renderer->global_uniform_data_buffer.buffer, 1, &region);
-
-		linear_allocator += sizeof(Global_Uniform_Data);
 	}
 
 	command_buffer_region_end(current_frame->upload_command_buffer);

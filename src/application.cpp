@@ -17,6 +17,7 @@
 // Private functions
 void build_ui();
 void build_info_window();
+void build_scene_window();
 
 void application_entry(Platform* p_platform)
 {
@@ -87,6 +88,8 @@ void build_ui()
 	if (app->ui.windows.info)       build_info_window();
 	if (app->ui.windows.hot_reload) hot_reload_build_ui();
 	if (app->ui.windows.camera)     camera_build_ui();
+
+	build_scene_window();
 }
 
 void build_info_window()
@@ -94,6 +97,16 @@ void build_info_window()
 	ImGui::Begin("Info", &app->ui.windows.info);
 	{
 		ImGui::Text("Info");
+	}
+	ImGui::End();
+}
+
+void build_scene_window()
+{
+	ImGui::Begin("Scene");
+	{
+		ImGui::SliderFloat3("Sun direction", glm::value_ptr(scene_data->sun.direction), -1, 1);
+		ImGui::SliderFloat("Sun intensity", &scene_data->sun.intensity, 0, 1);
 	}
 	ImGui::End();
 }

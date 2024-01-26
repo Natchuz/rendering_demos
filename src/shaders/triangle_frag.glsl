@@ -3,9 +3,16 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_debug_printf : require
 
+struct Directional_Light
+{
+	vec3  direction;
+	float intensity;
+};
+
 struct Global_Data
 {
-	mat4 pv_matrix;
+	mat4              pv_matrix;
+	Directional_Light sun_data;
 };
 
 struct PBR_Material
@@ -39,8 +46,10 @@ void main()
 {
 	PBR_Material material = materials[push_constants.material_id];
 
-	vec4 color = texture(
+	vec4 albedo_color = texture(
 		sampler2D(global_sampled_textures[material.albedo_texture], global_samplers[material.albedo_sampler]),
 		in_uv) * material.albedo_color;
+	vec4 color = albedo_color * global_data.sun_data.intensity
+		* clamp(dot(in_normal, normalize(global_data.sun_data.direction)), 0.0f, 1.0f);
 	out_color = vec4(color.xyz, 1.0f);
 }

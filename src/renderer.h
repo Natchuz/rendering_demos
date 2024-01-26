@@ -71,9 +71,16 @@ struct Render_Object
 	glm::mat4        transform;
 };
 
+struct Directional_Light
+{
+	glm::vec3 direction;
+	float     intensity;
+};
+
 struct Scene_Data
 {
 	std::vector<Render_Object> render_objects;
+	Directional_Light          sun;
 };
 
 inline Scene_Data* scene_data;
@@ -134,7 +141,8 @@ struct Frame_Data
 
 struct Global_Uniform_Data
 {
-	glm::mat4x4 render_matrix;
+	glm::mat4x4       render_matrix;
+	Directional_Light sun;
 };
 
 enum Buffering_Type : uint32_t
