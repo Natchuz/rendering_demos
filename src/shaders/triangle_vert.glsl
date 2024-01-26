@@ -20,11 +20,13 @@ layout (location = 3) in vec2 in_uv;
 
 layout (location = 0) out vec3 out_normal;
 layout (location = 1) out vec2 out_uv;
+layout (location = 2) out vec3 out_world_position;
 
 void main()
 {
-	out_normal = in_normal;
-	out_uv     = in_uv;
+	out_normal         = in_normal;
+	out_uv             = in_uv;
+	out_world_position = vec3(push_constants.model_matrix * vec4(in_position, 1.0f));
 
 	gl_Position = global_data.pv_matrix * push_constants.model_matrix * vec4(in_position, 1.0f);
 }

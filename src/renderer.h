@@ -77,9 +77,18 @@ struct Directional_Light
 	float     intensity;
 };
 
+struct Point_Light
+{
+	glm::vec3 position;
+	float     intensity;
+	float     radius;
+	uint8_t   _pad0[12];
+};
+
 struct Scene_Data
 {
 	std::vector<Render_Object> render_objects;
+	std::vector<Point_Light>   point_lights;
 	Directional_Light          sun;
 };
 
@@ -143,6 +152,9 @@ struct Global_Uniform_Data
 {
 	glm::mat4x4       render_matrix;
 	Directional_Light sun;
+	uint32_t          active_lights;
+	uint8_t           _pad0[12];
+	Point_Light       point_lights[16]; // MAX_POINT_LIGHTS
 };
 
 enum Buffering_Type : uint32_t

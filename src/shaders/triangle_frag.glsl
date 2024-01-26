@@ -9,10 +9,19 @@ struct Directional_Light
 	float intensity;
 };
 
+struct Point_Light
+{
+	vec3  position;
+	float intensity;
+	float radius;
+};
+
 struct Global_Data
 {
 	mat4              pv_matrix;
 	Directional_Light sun_data;
+	uint              active_lights;
+	Point_Light       point_lights[16];
 };
 
 struct PBR_Material
@@ -39,6 +48,7 @@ layout (push_constant) uniform Push_Constants
 
 layout (location = 0) in vec3 in_normal;
 layout (location = 1) in vec2 in_uv;
+layout (location = 2) in vec3 in_world_position;
 
 layout (location = 0) out vec4 out_color;
 
@@ -49,7 +59,26 @@ void main()
 	vec4 albedo_color = texture(
 		sampler2D(global_sampled_textures[material.albedo_texture], global_samplers[material.albedo_sampler]),
 		in_uv) * material.albedo_color;
-	vec4 color = albedo_color * global_data.sun_data.intensity
+
+	float attenuation = 0;
+
+	attenuation += global_data.sun_data.intensity
 		* clamp(dot(in_normal, normalize(global_data.sun_data.direction)), 0.0f, 1.0f);
+
+	for (uint i = 0; i < global_data.active_lights; i++)
+	{
+		Point_Light light = global_data.point_lights[i];
+
+		vec3  lv = light.position - in_world_position;
+		vec3  l  = normalize(lv);
+		float r  = length(lv);
+
+		float r_min = 0.01;
+		float r0    = light.radius;
+
+		attenuation += pow(r0 / max(r, r_min), 2) * light.intensity * clamp(dot(in_normal, l), 0, 1);
+	}
+
+	vec4 color = albedo_color * clamp(attenuation, 0, 1);
 	out_color = vec4(color.xyz, 1.0f);
 }

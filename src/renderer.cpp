@@ -1706,6 +1706,9 @@ void renderer_dispatch()
 		Global_Uniform_Data uniform_data = {};
 		uniform_data.render_matrix = render_matrix;
 		uniform_data.sun           = scene_data->sun;
+		uniform_data.active_lights = std::clamp(scene_data->point_lights.size(), 0ULL, 16ULL);
+		std::copy(scene_data->point_lights.begin(), scene_data->point_lights.begin() + uniform_data.active_lights,
+				  uniform_data.point_lights);
 
 		auto offset = staging_buffer_writer.write(&uniform_data, sizeof(Global_Uniform_Data));
 

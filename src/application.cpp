@@ -105,8 +105,37 @@ void build_scene_window()
 {
 	ImGui::Begin("Scene");
 	{
-		ImGui::SliderFloat3("Sun direction", glm::value_ptr(scene_data->sun.direction), -1, 1);
-		ImGui::SliderFloat("Sun intensity", &scene_data->sun.intensity, 0, 1);
+		if (ImGui::CollapsingHeader("Sun"))
+		{
+			ImGui::SliderFloat3("Direction", glm::value_ptr(scene_data->sun.direction), -1, 1);
+			ImGui::SliderFloat("Intensity", &scene_data->sun.intensity, 0, 1);
+		}
+
+		if (ImGui::CollapsingHeader("Point Lights"))
+		{
+			if (ImGui::Button("+"))
+			{
+				scene_data->point_lights.push_back({ .position = {0, 0, 0}, .intensity = 1, .radius = 1 });
+			}
+
+			// TODO check this
+			for (size_t i = 0; i < scene_data->point_lights.size(); i++)
+			{
+				Point_Light& light = scene_data->point_lights[i];
+
+				ImGui::PushID(i);
+				if (ImGui::Button("X"))
+				{
+					scene_data->point_lights.erase(scene_data->point_lights.begin() + i);
+					ImGui::PopID();
+					break;
+				}
+				ImGui::DragFloat3("Position", glm::value_ptr(light.position));
+				ImGui::SliderFloat("Intensity", &light.intensity, 0, 1);
+				ImGui::DragFloat("Radius", &light.radius);
+				ImGui::PopID();
+			}
+		}
 	}
 	ImGui::End();
 }
