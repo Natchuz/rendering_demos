@@ -68,6 +68,216 @@ void flush_buffer_writer(Mapped_Buffer_Writer& writer, VmaAllocator vma_allocato
 					   writer.offset());
 }
 
+void Debug_Pass::draw_line(glm::vec3 from, glm::vec3 to, glm::vec3 color)
+{
+	draws.push_back({from, to, color});
+}
+
+void debug_pass_init()
+{
+	debug_pass = new Debug_Pass;
+
+	{
+		VkBufferCreateInfo creation_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size  = 5000000,
+			.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		};
+
+		VmaAllocationCreateInfo vma_creation_info = {
+			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+
+		vmaCreateBuffer(gfx_context->vma_allocator,
+						&creation_info,
+						&vma_creation_info,
+						&debug_pass->vertex_buffer.buffer,
+						&debug_pass->vertex_buffer.allocation,
+						nullptr);
+		name_object(debug_pass->vertex_buffer.buffer, "Debug vertex buffer");
+	}
+
+	{
+		auto vert_shader_code = load_file("data/shaders/line_vert.spv");
+		VkShaderModuleCreateInfo vert_shader_create_info = {
+			.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+			.codeSize = vert_shader_code.size(),
+			.pCode    = reinterpret_cast<const uint32_t *>(vert_shader_code.data()),
+		};
+		vkCreateShaderModule(gfx_context->device, &vert_shader_create_info, nullptr, &debug_pass->vertex_shader);
+		name_object(debug_pass->vertex_shader, "Vertex line shader");
+
+		auto frag_shader_code = load_file("data/shaders/line_frag.spv");
+		VkShaderModuleCreateInfo frag_shader_create_info = {
+			.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+			.codeSize = frag_shader_code.size(),
+			.pCode = reinterpret_cast<const uint32_t *>(frag_shader_code.data()),
+		};
+		vkCreateShaderModule(gfx_context->device, &frag_shader_create_info, nullptr, &debug_pass->fragment_shader);
+		name_object(debug_pass->fragment_shader, "Fragment line shader");
+	}
+
+	// Pipeline layout
+	{
+		ZoneScopedN("Pipeline layout creation");
+
+		VkPushConstantRange push_constant_range = {
+			.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
+			.offset     = 0,
+			.size       = (16 + 3) * sizeof(float),
+		};
+
+		VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.flags = 0,
+			.setLayoutCount         = 0,
+			.pSetLayouts            = nullptr,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges    = &push_constant_range,
+		};
+		vkCreatePipelineLayout(gfx_context->device, &pipeline_layout_create_info,
+							   nullptr, &debug_pass->pipeline_layout);
+		name_object(debug_pass->pipeline_layout, "Debug pipeline layout");
+	}
+
+	// Pipeline
+	{
+		VkPipelineShaderStageCreateInfo vert_stage = {
+			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage  = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = debug_pass->vertex_shader,
+			.pName  = "main",
+		};
+		VkPipelineShaderStageCreateInfo frag_stage = {
+			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = debug_pass->fragment_shader,
+			.pName  = "main",
+		};
+		VkPipelineShaderStageCreateInfo stages[2] = {vert_stage, frag_stage};
+
+		VkVertexInputBindingDescription binding_description = {
+			.binding   = 0,
+			.stride    = 3 * sizeof(float),
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+		};
+
+		VkVertexInputAttributeDescription vertex_attributes[] = {
+			{ // Position attribute
+				.location = 0,
+				.binding  = 0,
+				.format   = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset   = 0,
+			},
+		};
+
+		VkPipelineVertexInputStateCreateInfo vertex_input_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+			.vertexBindingDescriptionCount   = 1,
+			.pVertexBindingDescriptions      = &binding_description,
+			.vertexAttributeDescriptionCount = 1,
+			.pVertexAttributeDescriptions    = vertex_attributes,
+		};
+
+		VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+			.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+		};
+
+		VkPipelineRasterizationStateCreateInfo rasterization_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+			.depthClampEnable        = VK_FALSE,
+			.rasterizerDiscardEnable = VK_FALSE,
+			.polygonMode             = VK_POLYGON_MODE_FILL,
+			.cullMode                = VK_CULL_MODE_NONE,
+			.frontFace               = VK_FRONT_FACE_CLOCKWISE,
+			.depthBiasEnable         = VK_FALSE,
+			.depthBiasConstantFactor = 0.0f,
+			.depthBiasClamp          = 0.0f,
+			.depthBiasSlopeFactor    = 0.0f,
+			.lineWidth               = 1.0f,
+		};
+
+		VkPipelineMultisampleStateCreateInfo multisample_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples  = VK_SAMPLE_COUNT_1_BIT,
+			.sampleShadingEnable   = VK_FALSE,
+			.minSampleShading      = 1.0f,
+			.pSampleMask           = nullptr,
+			.alphaToCoverageEnable = VK_FALSE,
+			.alphaToOneEnable      = VK_FALSE,
+		};
+
+		VkPipelineViewportStateCreateInfo viewport_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+			.viewportCount = 1,
+			.scissorCount  = 1,
+		};
+
+		VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+		VkPipelineDynamicStateCreateInfo dynamic_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+			.dynamicStateCount = 2,
+			.pDynamicStates    = dynamic_states,
+		};
+
+		VkPipelineColorBlendAttachmentState color_blend_attachment_state = {
+			.blendEnable    = VK_FALSE,
+			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+		};
+
+		VkPipelineColorBlendStateCreateInfo color_blend_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+			.logicOpEnable   = VK_FALSE,
+			.logicOp         = VK_LOGIC_OP_COPY,
+			.attachmentCount = 1,
+			.pAttachments    = &color_blend_attachment_state,
+		};
+
+		VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+			.colorAttachmentCount    = 1,
+			.pColorAttachmentFormats = &gfx_context->swapchain.selected_format.format,
+			.depthAttachmentFormat   = VK_FORMAT_D32_SFLOAT,
+			.stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+		};
+
+		VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+			.depthTestEnable       = true,
+			.depthWriteEnable      = true,
+			.depthCompareOp        = VK_COMPARE_OP_LESS_OR_EQUAL,
+			.depthBoundsTestEnable = false,
+			.stencilTestEnable     = false,
+		};
+
+		VkGraphicsPipelineCreateInfo pipeline_create_info = {
+			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+			.pNext = &pipeline_rendering_create_info,
+			.flags      = 0,
+			.stageCount = 2,
+			.pStages    = stages,
+			.pVertexInputState   = &vertex_input_state,
+			.pInputAssemblyState = &input_assembly_state,
+			.pViewportState      = &viewport_state,
+			.pRasterizationState = &rasterization_state,
+			.pMultisampleState   = &multisample_state,
+			.pDepthStencilState  = &depth_stencil_state,
+			.pColorBlendState    = &color_blend_state,
+			.pDynamicState       = &dynamic_state,
+			.layout              = debug_pass->pipeline_layout,
+			.renderPass          = VK_NULL_HANDLE,
+			.subpass             = 0,
+			.basePipelineHandle  = VK_NULL_HANDLE,
+		};
+
+		vkCreateGraphicsPipelines(gfx_context->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr,
+								  &debug_pass->pipeline);
+		name_object(debug_pass->pipeline, "Debug pass line pipeline");
+	}
+}
+
 void mesh_manager_init()
 {
 	ZoneScopedN("Mesh manager initialization");
@@ -253,6 +463,7 @@ void renderer_init()
 	renderer = new Renderer;
 
 	scene_data = new Scene_Data { .sun = {glm::vec3(0, 0, 1), 1.0f } };
+	debug_pass_init();
 	mesh_manager_init();
 	texture_manager_init();
 	material_manager_init();
@@ -1691,17 +1902,19 @@ void renderer_dispatch()
 	vkBeginCommandBuffer(current_frame->upload_command_buffer, &upload_begin_info); // Implicit reset
 	command_buffer_region_begin(current_frame->upload_command_buffer, "Upload stage");
 
+	glm::mat4 view = camera_get_view_matrix();
+	glm::mat4 projection = glm::perspective(
+		glm::radians(70.f),
+		1280.f / 720.f,
+		0.1f,
+		200.0f);
+	glm::mat4 render_matrix = projection * view;
+
+	size_t current_debug_pass_vertex_buffer_offset = 1000000 * frame_i;
+
 	// Build and stage per-frame data
 	{
 		ZoneScopedN("Build per frame uniform data");
-
-		glm::mat4 view = camera_get_view_matrix();
-		glm::mat4 projection = glm::perspective(
-			glm::radians(70.f),
-			1280.f / 720.f,
-			0.1f,
-			200.0f);
-		glm::mat4 render_matrix = projection * view;
 
 		Global_Uniform_Data uniform_data = {};
 		uniform_data.render_matrix = render_matrix;
@@ -1720,6 +1933,27 @@ void renderer_dispatch()
 		};
 		vkCmdCopyBuffer(current_frame->upload_command_buffer, current_frame->staging_buffer.buffer,
 						renderer->global_uniform_data_buffer.buffer, 1, &region);
+
+		// Debug pass copy
+		if (!debug_pass->draws.empty()) {
+			auto start_offset = staging_buffer_writer.offset();
+
+			for (auto & draw : debug_pass->draws)
+			{
+				staging_buffer_writer.write(&draw.from, 12);
+				staging_buffer_writer.write(&draw.to, 12);
+			}
+
+			auto end_offset = staging_buffer_writer.offset();
+
+			VkBufferCopy d_region = {
+				.srcOffset = start_offset,
+				.dstOffset = current_debug_pass_vertex_buffer_offset,
+				.size      = end_offset - start_offset,
+			};
+			vkCmdCopyBuffer(current_frame->upload_command_buffer, current_frame->staging_buffer.buffer,
+							debug_pass->vertex_buffer.buffer, 1, &d_region);
+		}
 	}
 
 	command_buffer_region_end(current_frame->upload_command_buffer);
@@ -1946,6 +2180,84 @@ void renderer_dispatch()
 		}
 		command_buffer_region_end(current_frame->draw_command_buffer);
 		vkCmdEndRendering(current_frame->draw_command_buffer);
+	}
+	command_buffer_region_end(current_frame->draw_command_buffer);
+
+	command_buffer_region_begin(current_frame->draw_command_buffer, "Debug pass");
+	{
+		VkRenderingAttachmentInfo swapchain_attachment_info = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+			.imageView   = swapchain_image.view,
+			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.resolveMode = VK_RESOLVE_MODE_NONE,
+			.loadOp      = VK_ATTACHMENT_LOAD_OP_LOAD,
+			.storeOp     = VK_ATTACHMENT_STORE_OP_STORE,
+		};
+
+		VkRenderingAttachmentInfo depth_attachment_info = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+			.imageView   = renderer->depth_buffer.view,
+			.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			.resolveMode = VK_RESOLVE_MODE_NONE,
+			.loadOp      = VK_ATTACHMENT_LOAD_OP_LOAD,
+			.storeOp     = VK_ATTACHMENT_STORE_OP_NONE,
+		};
+
+		VkRenderingInfo rendering_info = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+			.flags = 0,
+			.renderArea = {
+				.offset = {}, // Zero
+				.extent = gfx_context->swapchain.extent,
+			},
+			.layerCount = 1,
+			.viewMask   = 0,
+			.colorAttachmentCount = 1,
+			.pColorAttachments    = &swapchain_attachment_info,
+			.pDepthAttachment     = &depth_attachment_info,
+		};
+
+		VkViewport viewport = {
+			.x        = 0,
+			.y        = (float) gfx_context->swapchain.extent.height,
+			.width    = (float) gfx_context->swapchain.extent.width,
+			.height   = -1 * (float) gfx_context->swapchain.extent.height,
+			.minDepth = 0.0f,
+			.maxDepth = 1.0f,
+		};
+		VkRect2D scissor = { .offset = {}, .extent = gfx_context->swapchain.extent };
+
+		vkCmdSetViewport(current_frame->draw_command_buffer, 0, 1, &viewport);
+		vkCmdSetScissor(current_frame->draw_command_buffer, 0, 1, &scissor);
+
+		{
+			ZoneScopedN("Pipeline bind");
+			vkCmdBindPipeline(current_frame->draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, debug_pass->pipeline);
+		}
+
+		vkCmdBeginRendering(current_frame->draw_command_buffer, &rendering_info);
+		command_buffer_region_begin(current_frame->draw_command_buffer, "Rendering");
+		{
+			ZoneScopedN("Drawing");
+
+			for (size_t draw_index = 0; draw_index < debug_pass->draws.size(); draw_index++)
+			{
+				Debug_Pass::Draws& draw = debug_pass->draws[draw_index];
+
+				auto offset = current_debug_pass_vertex_buffer_offset + draw_index * sizeof(float) * 6; // 6 floats per draw
+				vkCmdBindVertexBuffers(current_frame->draw_command_buffer, 0, 1,
+									   &debug_pass->vertex_buffer.buffer, &offset);
+				vkCmdPushConstants(current_frame->draw_command_buffer, debug_pass->pipeline_layout,
+								   VK_SHADER_STAGE_ALL_GRAPHICS, 0, 16 * sizeof(float), &render_matrix);
+				vkCmdPushConstants(current_frame->draw_command_buffer, debug_pass->pipeline_layout,
+								   VK_SHADER_STAGE_ALL_GRAPHICS, 16 * sizeof(float), 12, glm::value_ptr(draw.color));
+				vkCmdDraw(current_frame->draw_command_buffer, 2, 1, 0, 0);
+			}
+		}
+		command_buffer_region_end(current_frame->draw_command_buffer);
+		vkCmdEndRendering(current_frame->draw_command_buffer);
+
+		debug_pass->draws.clear();
 	}
 	command_buffer_region_end(current_frame->draw_command_buffer);
 

@@ -54,6 +54,8 @@ void application_entry(Platform* p_platform)
 
 		renderer_dispatch();
 
+		debug_pass->draw_line(glm::vec3(0.0, 0.0, 0.0), scene_data->sun.direction, glm::vec3(1.0, 0.0, 0.0));
+
 		app->frame_number++;
 	}
 

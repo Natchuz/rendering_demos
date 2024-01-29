@@ -27,6 +27,28 @@ struct Mapped_Buffer_Writer
 
 void flush_buffer_writer(Mapped_Buffer_Writer& writer, VmaAllocator vma_allocator, VmaAllocation vma_allocation);
 
+struct Debug_Pass
+{
+	struct Draws
+	{
+		glm::vec3 from;
+		glm::vec3 to;
+		glm::vec3 color;
+	};
+
+	VkShaderModule       vertex_shader;
+	VkShaderModule       fragment_shader;
+	VkPipelineLayout     pipeline_layout;
+	VkPipeline           pipeline;
+	AllocatedBuffer      vertex_buffer;
+
+	std::vector<Draws>   draws;
+
+	void draw_line(glm::vec3 from, glm::vec3 to, glm::vec3 color);
+};
+
+inline Debug_Pass* debug_pass;
+
 // Meshes are stored in interleaved format, all in one buffer
 // TODO-FUTURE: separate position and properties stream (faster z rendering).
 struct Mesh_Manager

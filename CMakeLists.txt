@@ -20,9 +20,13 @@ set(SRCS
 set(SHADERS_SRCS
 		src/shaders/triangle_frag.glsl
 		src/shaders/triangle_vert.glsl
+		src/shaders/line_vert.glsl
+		src/shaders/line_frag.glsl
 		)
 set_source_files_properties(src/shaders/triangle_vert.glsl PROPERTIES ShaderType "vert" ShaderId "TRIANGLE_VERTEX")
 set_source_files_properties(src/shaders/triangle_frag.glsl PROPERTIES ShaderType "frag" ShaderId "TRIANGLE_VERTEX")
+set_source_files_properties(src/shaders/line_vert.glsl     PROPERTIES ShaderType "vert" ShaderId "TRIANGLE_VERTEX")
+set_source_files_properties(src/shaders/line_frag.glsl     PROPERTIES ShaderType "frag" ShaderId "TRIANGLE_VERTEX")
 
 # ======================
 # ====== Building ======
