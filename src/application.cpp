@@ -52,9 +52,13 @@ void application_entry(Platform* p_platform)
 		camera_update();
 		build_ui();
 
-		renderer_dispatch();
-
 		debug_pass->draw_line(glm::vec3(0.0, 0.0, 0.0), scene_data->sun.direction, glm::vec3(1.0, 0.0, 0.0));
+		for (auto& light : scene_data->point_lights)
+		{
+			debug_pass->draw_sphere(light.position, light.radius, 10, 10, glm::vec3(0.5, 0.5, 0.5));
+		}
+
+		renderer_dispatch();
 
 		app->frame_number++;
 	}

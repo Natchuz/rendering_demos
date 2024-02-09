@@ -45,6 +45,8 @@ struct Debug_Pass
 	std::vector<Draws>   draws;
 
 	void draw_line(glm::vec3 from, glm::vec3 to, glm::vec3 color);
+
+	void draw_sphere(glm::vec3 center_pos, float radius, uint32_t rings, uint32_t slices, glm::vec3 color);
 };
 
 inline Debug_Pass* debug_pass;

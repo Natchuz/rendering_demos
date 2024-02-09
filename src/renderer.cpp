@@ -73,6 +73,53 @@ void Debug_Pass::draw_line(glm::vec3 from, glm::vec3 to, glm::vec3 color)
 	draws.push_back({from, to, color});
 }
 
+#define PI (22.f / 7.f)
+
+void Debug_Pass::draw_sphere(glm::vec3 center_pos, float radius, uint32_t rings, uint32_t slices, glm::vec3 color)
+{
+	glm::mat4x4 model = glm::translate(glm::identity<glm::mat4x4>(), center_pos)
+		* glm::scale(glm::identity<glm::mat4x4>(), glm::vec3(radius));
+
+	for (int i = 0; i < (rings + 2); i++)
+	{
+		for (int j = 0; j < slices; j++)
+		{
+			const auto DEG2RAD = (PI / 180.f);
+			glm::vec3 first, second;
+
+			first.x  = cos(DEG2RAD * (270.f + (180.f / (rings + 1.f)) * i)) * sin(DEG2RAD * (360.0 * j / slices));
+			first.y  = sin(DEG2RAD * (270.f + (180.f / (rings + 1.f)) * i));
+			first.z  = cos(DEG2RAD * (270.f + (180.f / (rings + 1.f)) * i)) * cos(DEG2RAD * (360.0 * j / slices));
+			second.x = cos(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)))*sin(DEG2RAD*(360.0*(j + 1)/slices));
+			second.y = sin(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)));
+			second.z = cos(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)))*cos(DEG2RAD*(360.0*(j + 1)/slices));
+			first    = model * glm::vec4(first, 1.0);
+			second   = model * glm::vec4(second, 1.0);
+			this->draw_line(first, second, color);
+
+			first.x  = cos(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)))*sin(DEG2RAD*(360.0*(j + 1)/slices));
+			first.y  = sin(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)));
+			first.z  = cos(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)))*cos(DEG2RAD*(360.0*(j + 1)/slices));
+			second.x = cos(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)))*sin(DEG2RAD*(360.0*j/slices));
+			second.y = sin(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)));
+			second.z = cos(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)))*cos(DEG2RAD*(360.0*j/slices));
+			first    = model * glm::vec4(first, 1.0);
+			second   = model * glm::vec4(second, 1.0);
+			this->draw_line(first, second, color);
+
+			first.x  = cos(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)))*sin(DEG2RAD*(360.0*j/slices));
+			first.y  = sin(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)));
+			first.z  = cos(DEG2RAD*(270 + (180.0/(rings + 1))*(i + 1)))*cos(DEG2RAD*(360.0*j/slices));
+			second.x = cos(DEG2RAD*(270 + (180.0/(rings + 1))*i))*sin(DEG2RAD*(360.0*j/slices));
+			second.y = sin(DEG2RAD*(270 + (180.0/(rings + 1))*i));
+			second.z = cos(DEG2RAD*(270 + (180.0/(rings + 1))*i))*cos(DEG2RAD*(360.0*j/slices));
+			first    = model * glm::vec4(first, 1.0);
+			second   = model * glm::vec4(second, 1.0);
+			this->draw_line(first, second, color);
+		}
+	}
+}
+
 void debug_pass_init()
 {
 	debug_pass = new Debug_Pass;
