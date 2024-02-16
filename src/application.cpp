@@ -58,6 +58,11 @@ void application_entry(Platform* p_platform)
 			debug_pass->draw_sphere(light.position, light.radius, 10, 10, glm::vec3(0.5, 0.5, 0.5));
 		}
 
+		scene_data->sun.direction = glm::normalize(glm::vec3(
+			cos(3.14 / 180.0 * scene_data->yaw) * cos(3.14 / 180.0 * scene_data->pitch),
+			sin(3.14 / 180.0 * scene_data->pitch),
+			sin(3.14 / 180.0 * scene_data->yaw) * cos(3.14 / 180.0 * scene_data->pitch)));
+
 		renderer_dispatch();
 
 		app->frame_number++;
@@ -113,7 +118,12 @@ void build_scene_window()
 	{
 		if (ImGui::CollapsingHeader("Sun"))
 		{
-			ImGui::SliderFloat3("Direction", glm::value_ptr(scene_data->sun.direction), -1, 1);
+			ImGui::DragFloat("Yaw", &scene_data->yaw, 1.0f, 0.0f, 0.0f, "%.1f°");
+			ImGui::DragFloat("Pitch", &scene_data->pitch, 1.0f, -90.f, 90.f, "%.1f°");
+
+			if (scene_data->yaw < -180) scene_data->yaw += 360;
+			if (scene_data->yaw > 180)  scene_data->yaw -= 360;
+
 			ImGui::SliderFloat("Intensity", &scene_data->sun.intensity, 0, 1);
 		}
 

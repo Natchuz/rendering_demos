@@ -113,7 +113,11 @@ struct Scene_Data
 {
 	std::vector<Render_Object> render_objects;
 	std::vector<Point_Light>   point_lights;
-	Directional_Light          sun;
+
+	// Directional light
+	float             yaw;
+	float             pitch;
+	Directional_Light sun;
 };
 
 inline Scene_Data* scene_data;

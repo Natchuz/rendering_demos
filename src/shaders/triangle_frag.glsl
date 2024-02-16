@@ -63,7 +63,7 @@ void main()
 	float attenuation = 0;
 
 	attenuation += global_data.sun_data.intensity
-		* clamp(dot(in_normal, normalize(global_data.sun_data.direction)), 0.0f, 1.0f);
+		* clamp(dot(in_normal, global_data.sun_data.direction), 0.0f, 1.0f);
 
 	for (uint i = 0; i < global_data.active_lights; i++)
 	{
