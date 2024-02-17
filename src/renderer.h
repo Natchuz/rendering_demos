@@ -5,7 +5,6 @@
 
 #include <map>
 #include <deque>
-#include <stb_image.h>
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 

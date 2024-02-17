@@ -15,6 +15,7 @@ set(SRCS
 		src/vulkan_utilities.cpp
         src/gfx_context.cpp
         src/renderer.cpp
+		src/loader_gltf.cpp
 		)
 
 set(SHADERS_SRCS
