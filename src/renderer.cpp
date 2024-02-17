@@ -28,6 +28,7 @@ void renderer_create_sync_primitives();
 void renderer_destroy_sync_primitives();
 void renderer_create_upload_heap();
 void renderer_destroy_upload_heap();
+void renderer_init_shadow_pass();
 
 Mapped_Buffer_Writer::Mapped_Buffer_Writer(void* mapped_buffer_ptr)
 {
@@ -525,6 +526,7 @@ void renderer_init()
 	renderer_create_sync_primitives();
 	renderer_create_upload_heap();
 	load_scene_data();
+	renderer_init_shadow_pass();
 }
 
 void renderer_deinit()
@@ -707,6 +709,63 @@ void renderer_create_frame_data()
 							&allocation_info);
 			frame_data->staging_buffer_ptr = allocation_info.pMappedData;
 			name_object(frame_data->staging_buffer.buffer,"Staging buffer (frame {})", frame_i);
+		}
+	}
+
+	{
+		ZoneScopedN("Shadow map creation");
+
+		VkImageCreateInfo image_create_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.flags         = 0,
+			.imageType     = VK_IMAGE_TYPE_2D,
+			.format        = VK_FORMAT_D32_SFLOAT,
+			.extent        = { 2048, 2048, 1 },
+			.mipLevels     = 1,
+			.arrayLayers   = 1,
+			.samples       = VK_SAMPLE_COUNT_1_BIT,
+			.tiling        = VK_IMAGE_TILING_OPTIMAL,
+			.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			.sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		VmaAllocationCreateInfo vma_allocation_info = {
+			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+		};
+
+		for (int frame_i=0; frame_i < renderer->buffering; frame_i++)
+		{
+			auto frame_data = &renderer->frame_data[frame_i]; // Shortcut
+
+			vmaCreateImage(gfx_context->vma_allocator, &image_create_info, &vma_allocation_info,
+						   &frame_data->sun_shadow_map.image, &frame_data->sun_shadow_map.allocation,
+						   nullptr);
+
+			VkImageViewCreateInfo image_view_create_info = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+				.image      = frame_data->sun_shadow_map.image,
+				.viewType   = VK_IMAGE_VIEW_TYPE_2D,
+				.format     = VK_FORMAT_D32_SFLOAT,
+				.components = {
+					.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+					.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+					.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+					.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+				},
+				.subresourceRange = {
+					.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+					.baseMipLevel   = 0,
+					.levelCount     = 1,
+					.baseArrayLayer = 0,
+					.layerCount     = 1,
+				},
+			};
+
+			vkCreateImageView(gfx_context->device, &image_view_create_info, nullptr,
+							  &frame_data->sun_shadow_map.view);
+
+			texture_manager->images.push_back(frame_data->sun_shadow_map);
 		}
 	}
 }
@@ -1908,6 +1967,199 @@ void load_scene_data()
 	vkUpdateDescriptorSets(gfx_context->device, 4, descriptor_set_writes, 0, nullptr);
 }
 
+void renderer_init_shadow_pass()
+{
+	{
+		ZoneScopedN("Shader creation");
+
+		// If Spir-V shader is valid, casting bytes to 32-bit words shouldn't matter
+		auto vert_shader_code = load_file("data/shaders/shadow_pass_vert.spv");
+		VkShaderModuleCreateInfo vert_shader_create_info = {
+			.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+			.codeSize = vert_shader_code.size(),
+			.pCode    = reinterpret_cast<const uint32_t *>(vert_shader_code.data()),
+		};
+		vkCreateShaderModule(gfx_context->device, &vert_shader_create_info, nullptr, &renderer->shadow_pass.vertex_shader);
+		name_object(renderer->shadow_pass.vertex_shader, "Vertex shader");
+
+		auto frag_shader_code = load_file("data/shaders/shadow_pass_frag.spv");
+		VkShaderModuleCreateInfo frag_shader_create_info = {
+			.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+			.codeSize = frag_shader_code.size(),
+			.pCode = reinterpret_cast<const uint32_t *>(frag_shader_code.data()),
+		};
+		vkCreateShaderModule(gfx_context->device, &frag_shader_create_info, nullptr, &renderer->shadow_pass.fragment_shader);
+		name_object(renderer->shadow_pass.fragment_shader, "Fragment shader");
+	}
+
+	// Pipeline layout
+	{
+		ZoneScopedN("Pipeline layout creation");
+
+		VkPushConstantRange push_constant_range = {
+			.stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
+			.offset     = 0,
+			.size       = 32 * sizeof(float), // Projection matrix + model matrix
+		};
+
+		VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.flags = 0,
+			.setLayoutCount         = 0,
+			.pSetLayouts            = nullptr,
+			.pushConstantRangeCount = 1,
+			.pPushConstantRanges    = &push_constant_range,
+		};
+		vkCreatePipelineLayout(gfx_context->device, &pipeline_layout_create_info,
+							   nullptr, &renderer->shadow_pass.pipeline_layout);
+		name_object(renderer->shadow_pass.pipeline_layout, "Shadow pass layout");
+	}
+
+	// Pipeline
+	{
+		VkPipelineShaderStageCreateInfo vert_stage = {
+			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage  = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = renderer->shadow_pass.vertex_shader,
+			.pName  = "main",
+		};
+		VkPipelineShaderStageCreateInfo frag_stage = {
+			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = renderer->shadow_pass.fragment_shader,
+			.pName  = "main",
+		};
+		VkPipelineShaderStageCreateInfo stages[2] = {vert_stage, frag_stage};
+
+		VkVertexInputBindingDescription binding_description = {
+			.binding   = 0,
+			.stride    = 12 * sizeof(float),
+			.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+		};
+
+		VkVertexInputAttributeDescription vertex_attributes[] = {
+			{ // Position attribute
+				.location = 0,
+				.binding  = 0,
+				.format   = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset   = 0,
+			},
+		};
+
+		VkPipelineVertexInputStateCreateInfo vertex_input_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+			.vertexBindingDescriptionCount   = 1,
+			.pVertexBindingDescriptions      = &binding_description,
+			.vertexAttributeDescriptionCount = 1,
+			.pVertexAttributeDescriptions    = vertex_attributes,
+		};
+
+		VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+			.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+		};
+
+		VkPipelineRasterizationStateCreateInfo rasterization_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+			.depthClampEnable        = VK_FALSE,
+			.rasterizerDiscardEnable = VK_FALSE,
+			.polygonMode             = VK_POLYGON_MODE_FILL,
+			.cullMode                = VK_CULL_MODE_NONE,
+			.frontFace               = VK_FRONT_FACE_CLOCKWISE,
+			.depthBiasEnable         = VK_FALSE,
+			.depthBiasConstantFactor = 0.0f,
+			.depthBiasClamp          = 0.0f,
+			.depthBiasSlopeFactor    = 0.0f,
+			.lineWidth               = 1.0f,
+		};
+
+		VkPipelineMultisampleStateCreateInfo multisample_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples  = VK_SAMPLE_COUNT_1_BIT,
+			.sampleShadingEnable   = VK_FALSE,
+			.minSampleShading      = 1.0f,
+			.pSampleMask           = nullptr,
+			.alphaToCoverageEnable = VK_FALSE,
+			.alphaToOneEnable      = VK_FALSE,
+		};
+
+		VkPipelineDynamicStateCreateInfo dynamic_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		};
+
+		VkPipelineColorBlendAttachmentState color_blend_attachment_state = {
+			.blendEnable    = VK_FALSE,
+			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+		};
+
+		VkPipelineColorBlendStateCreateInfo color_blend_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+			.logicOpEnable   = VK_FALSE,
+			.logicOp         = VK_LOGIC_OP_COPY,
+			.attachmentCount = 1,
+			.pAttachments    = &color_blend_attachment_state,
+		};
+
+		VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+			.colorAttachmentCount    = 0,
+			.depthAttachmentFormat   = VK_FORMAT_D32_SFLOAT,
+			.stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+		};
+
+		VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+			.depthTestEnable       = true,
+			.depthWriteEnable      = true,
+			.depthCompareOp        = VK_COMPARE_OP_LESS_OR_EQUAL,
+			.depthBoundsTestEnable = false,
+			.stencilTestEnable     = false,
+		};
+
+		VkViewport viewport = {
+			.x        = 0,
+			.y        = (float) 2048,
+			.width    = (float) 2048,
+			.height   = -1 * (float) 2048,
+			.minDepth = 0.0f,
+			.maxDepth = 1.0f,
+		};
+		VkRect2D scissor = { .offset = {}, .extent = { 2048, 2048 } };
+
+		VkPipelineViewportStateCreateInfo viewport_state = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+			.viewportCount = 1,
+			.pViewports    = &viewport,
+			.scissorCount  = 1,
+			.pScissors     = &scissor,
+		};
+
+		VkGraphicsPipelineCreateInfo pipeline_create_info = {
+			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+			.pNext = &pipeline_rendering_create_info,
+			.flags      = 0,
+			.stageCount = 2,
+			.pStages    = stages,
+			.pVertexInputState   = &vertex_input_state,
+			.pInputAssemblyState = &input_assembly_state,
+			.pViewportState      = &viewport_state,
+			.pRasterizationState = &rasterization_state,
+			.pMultisampleState   = &multisample_state,
+			.pDepthStencilState  = &depth_stencil_state,
+			.pColorBlendState    = &color_blend_state,
+			.pDynamicState       = &dynamic_state,
+			.layout              = renderer->shadow_pass.pipeline_layout,
+			.renderPass          = VK_NULL_HANDLE,
+			.subpass             = 0,
+			.basePipelineHandle  = VK_NULL_HANDLE,
+		};
+
+		vkCreateGraphicsPipelines(gfx_context->device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr,
+								  &renderer->shadow_pass.pipeline);
+		name_object(renderer->shadow_pass.pipeline, "Shadow pass line pipeline");
+	}
+}
+
 void renderer_dispatch()
 {
 	ZoneScopedN("Renderer dispatch");
@@ -2101,6 +2353,123 @@ void renderer_dispatch()
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 	};
 	vkBeginCommandBuffer(current_frame->draw_command_buffer, &draw_begin_info);
+
+	{
+		ZoneScopedN("Transition shit");
+
+		VkImageMemoryBarrier render_transition_barrier = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout           = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			.image               = current_frame->sun_shadow_map.image,
+			.subresourceRange    = {
+				.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+				.baseMipLevel   = 0,
+				.levelCount     = 1,
+				.baseArrayLayer = 0,
+				.layerCount     = 1,
+			},
+		};
+
+		vkCmdPipelineBarrier(
+			current_frame->draw_command_buffer,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &render_transition_barrier);
+	}
+
+	{
+		VkClearValue depth_clear_value = { .depthStencil = { .depth = 1 } };
+
+		VkRenderingAttachmentInfo depth_attachment_info = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+			.imageView   = current_frame->sun_shadow_map.view,
+			.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			.resolveMode = VK_RESOLVE_MODE_NONE,
+			.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp     = VK_ATTACHMENT_STORE_OP_STORE,
+			.clearValue  = depth_clear_value,
+		};
+
+		VkRenderingInfo rendering_info = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+			.flags = 0,
+			.renderArea = {
+				.offset = {}, // Zero
+				.extent = {2048, 2048},
+			},
+			.layerCount = 1,
+			.viewMask   = 0,
+			.colorAttachmentCount = 0,
+			.pDepthAttachment     = &depth_attachment_info,
+		};
+
+		{
+			ZoneScopedN("Pipeline bind");
+			vkCmdBindPipeline(current_frame->draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->shadow_pass.pipeline);
+		}
+
+		vkCmdBeginRendering(current_frame->draw_command_buffer, &rendering_info);
+		command_buffer_region_begin(current_frame->draw_command_buffer, "Shadow map");
+		{
+			ZoneScopedN("Drawing");
+
+			glm::vec3 position = glm::vec3(-9.f, 22.f, 3.f);
+			glm::mat4 pos = glm::translate(glm::identity<glm::mat4>(), position);
+			glm::mat4 proj = glm::ortho(0.0f, 800.0f, 0.0f, 600.0f, 0.1f, 100.0f);
+			glm::mat4 light_space = proj * pos * glm::rotate(glm::identity<glm::mat4>(), 3.14f/2.f, glm::vec3(0.62, 0, 0.777));
+
+			vkCmdPushConstants(current_frame->draw_command_buffer, renderer->shadow_pass.pipeline_layout,
+							   VK_SHADER_STAGE_ALL_GRAPHICS, 16 * sizeof(float), 16 * sizeof(float), &light_space);
+
+			for (auto& render_object : scene_data->render_objects)
+			{
+				Mesh_Manager::Mesh_Description mesh = mesh_manager->get_mesh(render_object.mesh_id);
+				vkCmdBindVertexBuffers(current_frame->draw_command_buffer, 0, 1, &mesh_manager->vertex_buffer.buffer,
+									   &mesh.vertex_offset);
+				vkCmdBindIndexBuffer(current_frame->draw_command_buffer, mesh_manager->indices_buffer.buffer,
+									 mesh.indices_offset, VK_INDEX_TYPE_UINT16);
+				vkCmdPushConstants(current_frame->draw_command_buffer, renderer->shadow_pass.pipeline_layout,
+								   VK_SHADER_STAGE_ALL_GRAPHICS, 0, 16 * sizeof(float), &render_object.transform);
+				vkCmdDrawIndexed(current_frame->draw_command_buffer, mesh.indices_count, 1, 0, 0, 1);
+			}
+		}
+		command_buffer_region_end(current_frame->draw_command_buffer);
+		vkCmdEndRendering(current_frame->draw_command_buffer);
+	}
+
+	{
+		ZoneScopedN("Transition shit");
+
+		VkImageMemoryBarrier render_transition_barrier = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout     = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			.image               = current_frame->sun_shadow_map.image,
+			.subresourceRange    = {
+				.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+				.baseMipLevel   = 0,
+				.levelCount     = 1,
+				.baseArrayLayer = 0,
+				.layerCount     = 1,
+			},
+		};
+
+		vkCmdPipelineBarrier(
+			current_frame->draw_command_buffer,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &render_transition_barrier);
+	}
 
 	{
 		ZoneScopedN("Transition to color attachment layout");

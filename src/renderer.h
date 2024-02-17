@@ -174,6 +174,8 @@ struct Frame_Data
 
 	AllocatedBuffer staging_buffer; // Staging buffer that will update other buffers with changed data
 	void*           staging_buffer_ptr;
+
+	Allocated_View_Image sun_shadow_map;
 };
 
 struct Global_Uniform_Data
@@ -193,6 +195,14 @@ enum Buffering_Type : uint32_t
 
 struct Renderer
 {
+	struct Shadow_Pass
+	{
+		VkShaderModule       vertex_shader;
+		VkShaderModule       fragment_shader;
+		VkPipelineLayout     pipeline_layout;
+		VkPipeline           pipeline;
+	} shadow_pass;
+
 	Descriptor_Set_Allocator descriptor_set_allocator; // Global descriptor set allocator
 
 	// Global data for shaders
