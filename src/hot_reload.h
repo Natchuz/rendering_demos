@@ -1,7 +1,7 @@
 #pragma once
 
 #if LIVEPP_ENABLED
-#include <LivePP/API/LPP_API_x64_CPP.h>
+#include <LivePP/API/x64/LPP_API_x64_CPP.h>
 #endif
 
 // Manages code hot reloading
