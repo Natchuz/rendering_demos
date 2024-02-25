@@ -31,7 +31,8 @@ void load_scene_data()
 
 	auto asset = gltf->getParsedAsset();
 
-	auto upload_writer = Mapped_Buffer_Writer(renderer->main_upload_heap_ptr);
+	auto upload_heap_block = renderer->upload_heap.allocate_block(200 * 1000 * 1000);
+	auto upload_writer = Mapped_Buffer_Writer(upload_heap_block.ptr);
 
 	// Texture and sampler data loading into texture_manager.
 	// This design might seem weird, but gathering all textures in one place opens doors to easier migration to
@@ -463,15 +464,16 @@ void load_scene_data()
 	{
 		ZoneScopedN("Upload command submission");
 
-		flush_buffer_writer(upload_writer, gfx_context->vma_allocator, renderer->main_upload_heap.allocation);
+		//flush_buffer_writer(upload_writer, gfx_context->vma_allocator, renderer->main_upload_heap.allocation);
+		renderer->upload_heap.submit_free(upload_heap_block);
 
 		VkCommandBufferBeginInfo begin_info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, };
 		vkBeginCommandBuffer(renderer->upload_command_buffer, &begin_info);
 
 		// Copy buffers
-		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
+		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 						mesh_manager->vertex_buffer.buffer, vertex_copies.size(), vertex_copies.data());
-		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
+		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 						mesh_manager->indices_buffer.buffer, indices_copies.size(), indices_copies.data());
 
 		VkBufferCopy material_copy = {
@@ -479,7 +481,7 @@ void load_scene_data()
 			.dstOffset = 0,
 			.size      = material_data_size,
 		};
-		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
+		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 						material_manager->material_storage_buffer.buffer, 1, &material_copy);
 
 		// Enqueue upload of all pending textures
@@ -524,7 +526,7 @@ void load_scene_data()
 					.depth   = 1,
 				},
 			};
-			vkCmdCopyBufferToImage(renderer->upload_command_buffer, renderer->main_upload_heap.buffer,
+			vkCmdCopyBufferToImage(renderer->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 								   vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
 			// Await transfer for mip 0

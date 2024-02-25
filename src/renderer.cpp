@@ -23,8 +23,6 @@ void renderer_create_pipeline();
 void renderer_destroy_pipeline();
 void renderer_create_sync_primitives();
 void renderer_destroy_sync_primitives();
-void renderer_create_upload_heap();
-void renderer_destroy_upload_heap();
 void renderer_init_shadow_pass();
 
 Mapped_Buffer_Writer::Mapped_Buffer_Writer(void* mapped_buffer_ptr)
@@ -58,12 +56,6 @@ void Mapped_Buffer_Writer::align_next(size_t alignment) {
 		to_advance = ((offset() + alignment - 1) & ~(alignment - 1)) - offset();
 	}
 	advance(to_advance);
-}
-
-void flush_buffer_writer(Mapped_Buffer_Writer& writer, VmaAllocator vma_allocator, VmaAllocation vma_allocation)
-{
-	vmaFlushAllocation(gfx_context->vma_allocator, renderer->main_upload_heap.allocation, 0,
-					   writer.offset());
 }
 
 void Debug_Pass::draw_line(glm::vec3 from, glm::vec3 to, glm::vec3 color)
@@ -521,7 +513,6 @@ void renderer_init()
 	renderer_create_shaders();
 	renderer_create_pipeline();
 	renderer_create_sync_primitives();
-	renderer_create_upload_heap();
 	load_scene_data();
 	renderer_init_shadow_pass();
 }
@@ -530,7 +521,6 @@ void renderer_deinit()
 {
 	vkDeviceWaitIdle(gfx_context->device);
 
-	renderer_destroy_upload_heap();
 	renderer_destroy_sync_primitives();
 	renderer_destroy_pipeline();
 	renderer_destroy_shaders();
@@ -678,37 +668,6 @@ void renderer_create_frame_data()
 		}
 	}
 
-	// Staging buffer
-	{
-		ZoneScopedN("Staging buffer allocation");
-
-		VkBufferCreateInfo staging_buffer_create_info = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size = 30000000, // 30 mb
-			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		};
-
-		VmaAllocationCreateInfo staging_buffer_vma_create_info = {
-			.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
-			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-		};
-
-		for (int frame_i=0; frame_i < renderer->buffering; frame_i++)
-		{
-			auto frame_data = &renderer->frame_data[frame_i]; // Shortcut
-
-			VmaAllocationInfo allocation_info;
-			vmaCreateBuffer(gfx_context->vma_allocator,
-							&staging_buffer_create_info,
-							&staging_buffer_vma_create_info,
-							&frame_data->staging_buffer.buffer,
-							&frame_data->staging_buffer.allocation,
-							&allocation_info);
-			frame_data->staging_buffer_ptr = allocation_info.pMappedData;
-			name_object(frame_data->staging_buffer.buffer,"Staging buffer (frame {})", frame_i);
-		}
-	}
-
 	{
 		ZoneScopedN("Shadow map creation");
 
@@ -770,13 +729,6 @@ void renderer_create_frame_data()
 void renderer_destroy_frame_data()
 {
 	ZoneScopedN("Frame data destruction");
-
-	// Staging buffer
-	for (int frame_i=0; frame_i < renderer->buffering; frame_i++)
-	{
-		vmaDestroyBuffer(gfx_context->vma_allocator, renderer->frame_data[frame_i].staging_buffer.buffer,
-						 renderer->frame_data[frame_i].staging_buffer.allocation);
-	}
 
 	// Synchronization primitives
 	for (int frame_i=0; frame_i < renderer->buffering; frame_i++)
@@ -1156,65 +1108,6 @@ void renderer_destroy_sync_primitives()
 	ZoneScopedN("Synchronization primitives destruction");
 }
 
-void renderer_create_upload_heap()
-{
-	ZoneScopedN("Main upload heap creation");
-
-	{
-		ZoneScopedN("Heap allocation");
-
-		VkBufferCreateInfo create_info = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.size  = 500000000, // 500 MB
-			.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		};
-
-		VmaAllocationCreateInfo vma_create_info = {
-			.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-			.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-		};
-
-		vmaCreateBuffer(gfx_context->vma_allocator,
-						&create_info,
-						&vma_create_info,
-						&renderer->main_upload_heap.buffer,
-						&renderer->main_upload_heap.allocation,
-						nullptr);
-		vmaMapMemory(gfx_context->vma_allocator, renderer->main_upload_heap.allocation,
-					 &renderer->main_upload_heap_ptr);
-
-		name_object(renderer->main_upload_heap.buffer, "Main upload heap");
-	}
-
-	{
-		ZoneScopedN("Command Pool and Command buffer creation");
-
-		VkCommandPoolCreateInfo command_pool_create_info = {
-			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-			.queueFamilyIndex = gfx_context->gfx_queue_family_index,
-		};
-
-		vkCreateCommandPool(gfx_context->device, &command_pool_create_info, nullptr, &renderer->upload_command_pool);
-		name_object(renderer->upload_command_pool, "Main upload heap command pool");
-
-		VkCommandBufferAllocateInfo allocate_info = {
-			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-			.commandPool        = renderer->upload_command_pool,
-			.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-			.commandBufferCount = 1,
-		};
-
-		vkAllocateCommandBuffers(gfx_context->device, &allocate_info, &renderer->upload_command_buffer);
-		name_object(renderer->upload_command_buffer, "Main upload heap command buffer");
-	}
-}
-
-void renderer_destroy_upload_heap()
-{
-	ZoneScopedN("Main upload heap destruction");
-}
-
 void renderer_init_shadow_pass()
 {
 	{
@@ -1408,6 +1301,86 @@ void renderer_init_shadow_pass()
 	}
 }
 
+Upload_Heap::Upload_Heap(size_t initial_size)
+{
+	frame_number = -1;
+	delete_queue = {};
+
+	VkBufferCreateInfo buffer_create_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = initial_size,
+		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	};
+
+	VmaAllocationCreateInfo buffer_vma_create_info = {
+		.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+	};
+
+	VmaAllocationInfo allocation_info;
+	vmaCreateBuffer(gfx_context->vma_allocator,
+	                &buffer_create_info,
+	                &buffer_vma_create_info,
+	                &upload_buffer.buffer,
+	                &upload_buffer.allocation,
+	                &allocation_info);
+	upload_buffer_ptr = allocation_info.pMappedData;
+
+	VmaVirtualBlockCreateInfo virtual_block_create_info = { .size = initial_size };
+	vmaCreateVirtualBlock(&virtual_block_create_info, &virtual_block);
+}
+
+Upload_Heap::~Upload_Heap()
+{
+	//vmaUnmapMemory(gfx_context->vma_allocator, upload_buffer.allocation);
+	vmaDestroyBuffer(gfx_context->vma_allocator, upload_buffer.buffer, upload_buffer.allocation);
+}
+
+void Upload_Heap::begin_frame()
+{
+	frame_number++;
+	
+	if (delete_queue.size() == 0) return;
+
+	// Process deletes
+	for (; delete_queue.front().frame < frame_number - 3; delete_queue.pop_front())
+	{
+		Free_Slot& slot = delete_queue.front();
+		vmaVirtualFree(virtual_block, slot.block.allocation);
+	}
+}
+
+Upload_Heap::Block Upload_Heap::allocate_block(size_t size, size_t alignment)
+{
+	VmaVirtualAllocationCreateInfo virtual_allocation_create_info = { 
+		.size      = size, 
+		.alignment = alignment,
+		.flags     = VMA_VIRTUAL_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT, // Want fast allocation
+	};
+
+	VmaVirtualAllocation allocation;
+	VkDeviceSize         offset;
+	VkResult result = vmaVirtualAllocate(virtual_block, &virtual_allocation_create_info, &allocation, &offset);
+
+	if (result != VK_SUCCESS) spdlog::error("Could not sub-allocate upload heap"); // TODO fallback to crreating new pool
+
+	Upload_Heap::Block block = { 
+		.allocation = allocation,
+		.offset     = offset,
+		.size       = size,
+		.ptr        = static_cast<char*>(upload_buffer_ptr) + offset,
+	};
+	return block;
+}
+
+void Upload_Heap::submit_free(Upload_Heap::Block block)
+{
+	Free_Slot free_slot = { .block = block, .frame = frame_number };
+	delete_queue.push_back(free_slot);
+
+	vmaFlushAllocation(gfx_context->vma_allocator, upload_buffer.allocation, block.offset, block.size);
+}
+
 void renderer_dispatch()
 {
 	ZoneScopedN("Renderer dispatch");
@@ -1434,8 +1407,6 @@ void renderer_dispatch()
 		vkWaitSemaphores(gfx_context->device, &wait_info, UINT64_MAX);
 	}
 
-	Mapped_Buffer_Writer staging_buffer_writer(current_frame->staging_buffer_ptr);
-
 	// This is the offset inside per frame data buffer that will be used during this frame
 	size_t current_per_frame_data_buffer_offset = clamp_size_to_alignment(
 		sizeof(Global_Uniform_Data),
@@ -1461,7 +1432,7 @@ void renderer_dispatch()
 
 	// Build and stage per-frame data
 	{
-		ZoneScopedN("Build per frame uniform data");
+		Upload_Heap::Block block = renderer->upload_heap.allocate_block(sizeof(Global_Uniform_Data));
 
 		Global_Uniform_Data uniform_data = {};
 		uniform_data.render_matrix = render_matrix;
@@ -1470,36 +1441,41 @@ void renderer_dispatch()
 		std::copy(scene_data->point_lights.begin(), scene_data->point_lights.begin() + uniform_data.active_lights,
 				  uniform_data.point_lights);
 
-		auto offset = staging_buffer_writer.write(&uniform_data, sizeof(Global_Uniform_Data));
-
 		// Upload
 		VkBufferCopy region = {
-			.srcOffset = offset,
+			.srcOffset = block.offset,
 			.dstOffset = current_per_frame_data_buffer_offset,
 			.size      = sizeof(Global_Uniform_Data),
 		};
-		vkCmdCopyBuffer(current_frame->upload_command_buffer, current_frame->staging_buffer.buffer,
+		vkCmdCopyBuffer(current_frame->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 						renderer->global_uniform_data_buffer.buffer, 1, &region);
 
-		// Debug pass copy
-		if (!debug_pass->draws.empty()) {
-			auto start_offset = staging_buffer_writer.offset();
+		renderer->upload_heap.submit_free(block);
+	}
 
-			for (auto & draw : debug_pass->draws)
+	// Debug pass data
+	{
+		if (!debug_pass->draws.empty())
+		{
+			size_t size = debug_pass->draws.size() * 24; // Total size of debug data
+			Upload_Heap::Block block = renderer->upload_heap.allocate_block(size);
+			Mapped_Buffer_Writer writer(block.ptr);
+
+			for (auto& draw : debug_pass->draws)
 			{
-				staging_buffer_writer.write(&draw.from, 12);
-				staging_buffer_writer.write(&draw.to, 12);
+				writer.write(&draw.from, 12);
+				writer.write(&draw.to, 12);
 			}
 
-			auto end_offset = staging_buffer_writer.offset();
-
-			VkBufferCopy d_region = {
-				.srcOffset = start_offset,
+			VkBufferCopy region = {
+				.srcOffset = block.offset,
 				.dstOffset = current_debug_pass_vertex_buffer_offset,
-				.size      = end_offset - start_offset,
+				.size      = size,
 			};
-			vkCmdCopyBuffer(current_frame->upload_command_buffer, current_frame->staging_buffer.buffer,
-							debug_pass->vertex_buffer.buffer, 1, &d_region);
+			vkCmdCopyBuffer(current_frame->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
+							debug_pass->vertex_buffer.buffer, 1, &region);
+
+			renderer->upload_heap.submit_free(block);
 		}
 	}
 

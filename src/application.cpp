@@ -47,6 +47,8 @@ void application_entry(Platform* p_platform)
 		p_platform->poll_events();
 		p_platform->fill_input();
 
+		renderer->upload_heap.begin_frame();
+
 		imgui_new_frame();
 
 		camera_update();

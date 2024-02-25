@@ -171,9 +171,6 @@ struct Frame_Data
 
 	VkSemaphore acquire_semaphore; // Swapchain image_handle acquire event
 
-	AllocatedBuffer staging_buffer; // Staging buffer that will update other buffers with changed data
-	void*           staging_buffer_ptr;
-
 	Allocated_View_Image sun_shadow_map;
 };
 
@@ -190,6 +187,46 @@ enum Buffering_Type : uint32_t
 {
 	DOUBLE = 2,
 	TRIPLE = 3,
+};
+
+// Manages upload heap.
+// It a persistently mapped, host-visible buffer, that you can use to upload data to other buffers.
+// You allocate space on it, and memcpy to it. You are free to do whatever you want with it.
+// schedule_free() should be called the moment you schedule your data for upload.
+// Chunk will become invalid handle and will be physicaly deallocated after few frames, once
+// GPU is done with the data.
+//
+// TODO: in future, we can abstract uploading as writing to pointer, and automatically utilize
+// ReBAR if it is availble.
+struct Upload_Heap
+{
+	struct Block
+	{
+		VmaVirtualAllocation allocation;
+		size_t               offset;
+		size_t               size;
+		void*                ptr;
+	};
+
+	struct Free_Slot
+	{
+		Block    block;
+		uint32_t frame;
+	};
+
+	AllocatedBuffer upload_buffer;
+	void*           upload_buffer_ptr;
+	VmaVirtualBlock virtual_block;
+
+	std::deque<Free_Slot> delete_queue;
+	uint32_t              frame_number; // Internal frame tracking / TODO: do we need it?
+
+	Upload_Heap(size_t initial_size = 300 * 1000 * 1000); // 300 Mb by default
+	~Upload_Heap();
+
+	void  begin_frame();
+	Block allocate_block(size_t size, size_t alignment = 0);
+	void  submit_free   (Block block);
 };
 
 struct Renderer
@@ -231,8 +268,8 @@ struct Renderer
 	// by adding proper streaming support.
 	VkCommandPool   upload_command_pool;
 	VkCommandBuffer upload_command_buffer;
-	AllocatedBuffer main_upload_heap;
-	void*           main_upload_heap_ptr;
+
+	Upload_Heap upload_heap;
 };
 
 inline Renderer* renderer;

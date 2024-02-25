@@ -1,0 +1,85 @@
+{
+	"version": 5,
+	"cmakeMinimumRequired": {
+		"major": 3,
+		"minor": 23,
+		"patch": 0
+	},
+	"configurePresets": [
+		{
+			"name": "vs-base",
+			"displayName": "Visual Studio - Debug",
+			"generator": "Visual Studio 17 2022",
+			"binaryDir": "${sourceDir}/build/${presetName}",
+			"toolchainFile": "C:/apps/scoop/apps/vcpkg/current/scripts/buildsystems/vcpkg.cmake",
+			"hidden": true
+		},
+		{
+			"name": "vs-debug",
+			"inherits" : "vs-base",
+			"displayName": "Visual Studio - Debug",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Debug"
+			}
+		},
+		{
+			"name": "vs-debug-livepp",
+			"inherits": "vs-debug",
+			"displayName": "Visual Studio - Debug / Live++",
+			"cacheVariables": {
+				"LIVEPP": "ON"
+			}
+		},
+		{
+			"name": "vs-release",
+			"inherits": "vs-debug",
+			"displayName": "Visual Studio - Release",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release"
+			}
+		},
+		{
+			"name": "vs-release-debug",
+			"inherits": "vs-debug",
+			"displayName": "Visual Studio - Release with debug info",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "RelWithDebInfo"
+			}
+		},
+		{
+			"name": "vs-release-debug-tracy",
+			"inherits": "vs-release-debug",
+			"displayName": "Visual Studio - Release with debug info / Tracy",
+			"cacheVariables": {
+				"PROFILER": "TRACY"
+			}
+		}
+	],
+	"buildPresets": [
+		{
+			"name": "vs-debug",
+			"configurePreset": "vs-debug",
+			"jobs": 16
+		},
+		{
+			"name": "vs-debug-livepp",
+			"configurePreset": "vs-debug-livepp",
+			"jobs": 16
+		},
+		{
+			"name": "vs-release",
+			"configurePreset": "vs-release",
+			"jobs": 16
+		},
+		{
+			"name": "vs-release-debug",
+			"configurePreset": "vs-release-debug",
+			"jobs": 16
+		},
+		{
+			"name": "vs-release-debug-tracy",
+			"configurePreset": "vs-release-debug-tracy",
+			"jobs": 16
+		}
+	]
+}
