@@ -461,6 +461,33 @@ void load_scene_data()
 		nodes_queue.pop_front();
 	}
 
+	// TODO: remove this, once we do async loading
+	VkCommandPool   upload_command_pool;
+	VkCommandBuffer upload_command_buffer;
+
+	{
+		ZoneScopedN("Command Pool and Command buffer creation");
+
+		VkCommandPoolCreateInfo command_pool_create_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = gfx_context->gfx_queue_family_index,
+		};
+
+		vkCreateCommandPool(gfx_context->device, &command_pool_create_info, nullptr, &upload_command_pool);
+		name_object(upload_command_pool, "Main upload heap command pool");
+
+		VkCommandBufferAllocateInfo allocate_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = upload_command_pool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = 1,
+		};
+
+		vkAllocateCommandBuffers(gfx_context->device, &allocate_info, &upload_command_buffer);
+		name_object(upload_command_buffer, "Main upload heap command buffer");
+	}
+
 	{
 		ZoneScopedN("Upload command submission");
 
@@ -468,12 +495,12 @@ void load_scene_data()
 		renderer->upload_heap.submit_free(upload_heap_block);
 
 		VkCommandBufferBeginInfo begin_info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, };
-		vkBeginCommandBuffer(renderer->upload_command_buffer, &begin_info);
+		vkBeginCommandBuffer(upload_command_buffer, &begin_info);
 
 		// Copy buffers
-		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
+		vkCmdCopyBuffer(upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 						mesh_manager->vertex_buffer.buffer, vertex_copies.size(), vertex_copies.data());
-		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
+		vkCmdCopyBuffer(upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 						mesh_manager->indices_buffer.buffer, indices_copies.size(), indices_copies.data());
 
 		VkBufferCopy material_copy = {
@@ -481,7 +508,7 @@ void load_scene_data()
 			.dstOffset = 0,
 			.size      = material_data_size,
 		};
-		vkCmdCopyBuffer(renderer->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
+		vkCmdCopyBuffer(upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 						material_manager->material_storage_buffer.buffer, 1, &material_copy);
 
 		// Enqueue upload of all pending textures
@@ -507,7 +534,7 @@ void load_scene_data()
 					.layerCount     = 1,
 				},
 			};
-			vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
+			vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_HOST_BIT,
 								 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
 								 &to_transfer_dst_barrier);
 
@@ -526,7 +553,7 @@ void load_scene_data()
 					.depth   = 1,
 				},
 			};
-			vkCmdCopyBufferToImage(renderer->upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
+			vkCmdCopyBufferToImage(upload_command_buffer, renderer->upload_heap.upload_buffer.buffer,
 								   vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
 			// Await transfer for mip 0
@@ -545,7 +572,7 @@ void load_scene_data()
 					.layerCount     = 1,
 				},
 			};
-			vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+			vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
 								 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
 								 &await_transfer_barrier);
 
@@ -568,27 +595,27 @@ void load_scene_data()
 						.layerCount     = 1,
 					},
 				};
-				vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
 									 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
 									 &mip_to_transfer_dst);
 
 				VkImageBlit2 regions = {
 					.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
 					.srcSubresource = {
-						.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-						.mipLevel       = dst_mip - 1,
-						.baseArrayLayer = 0,
-						.layerCount     = 1,
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+							.mipLevel = dst_mip - 1,
+							.baseArrayLayer = 0,
+							.layerCount = 1,
 					},
 					.srcOffsets = {
 						{ 0, 0, 0 },
 						{ (image_upload.width >> dst_mip - 1), (image_upload.width >> dst_mip - 1), 1 }
 					},
 					.dstSubresource = {
-						.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-						.mipLevel       = dst_mip,
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.mipLevel = dst_mip,
 						.baseArrayLayer = 0,
-						.layerCount     = 1,
+						.layerCount = 1,
 					},
 					.dstOffsets = {
 						{ 0, 0, 0 },
@@ -598,36 +625,36 @@ void load_scene_data()
 
 				VkBlitImageInfo2 blit_info = {
 					.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
-					.srcImage       = vk_image,
+					.srcImage = vk_image,
 					.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-					.dstImage       = vk_image,
+					.dstImage = vk_image,
 					.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					.regionCount    = 1,
-					.pRegions       = &regions,
-					.filter         = VK_FILTER_LINEAR,
+					.regionCount = 1,
+					.pRegions = &regions,
+					.filter = VK_FILTER_LINEAR,
 				};
 
-				vkCmdBlitImage2(renderer->upload_command_buffer, &blit_info);
+				vkCmdBlitImage2(upload_command_buffer, &blit_info);
 
 				// Move dst mip to trransfer src
 				VkImageMemoryBarrier mip_to_transfer_src = {
 					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 					.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
 					.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-					.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-					.image         = vk_image,
+					.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					.image = vk_image,
 					.subresourceRange = {
-						.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-						.baseMipLevel   = dst_mip,
-						.levelCount     = 1,
+						.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+						.baseMipLevel = dst_mip,
+						.levelCount = 1,
 						.baseArrayLayer = 0,
-						.layerCount     = 1,
+						.layerCount = 1,
 					},
 				};
-				vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-									 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-									 &mip_to_transfer_src);
+				vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+					&mip_to_transfer_src);
 			}
 
 			// Immediately transition into proper layout
@@ -635,35 +662,35 @@ void load_scene_data()
 				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT,
 				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-				.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				.image         = vk_image,
+				.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				.image = vk_image,
 				.subresourceRange = {
-					.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-					.baseMipLevel   = 0,
-					.levelCount     = mip_levels,
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = 0,
+					.levelCount = mip_levels,
 					.baseArrayLayer = 0,
-					.layerCount     = 1,
+					.layerCount = 1,
 				},
 			};
 
-			vkCmdPipelineBarrier(renderer->upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-								 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-								 &from_transform_transition_barrier);
+			vkCmdPipelineBarrier(upload_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+				&from_transform_transition_barrier);
 		}
 
-		vkEndCommandBuffer(renderer->upload_command_buffer);
+		vkEndCommandBuffer(upload_command_buffer);
 
 		VkCommandBufferSubmitInfo command_buffer_submit_info = {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-			.commandBuffer = renderer->upload_command_buffer,
+			.commandBuffer = upload_command_buffer,
 		};
 
 		VkSubmitInfo2 submit_info = {
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-			.waitSemaphoreInfoCount   = 0,
-			.commandBufferInfoCount   = 1,
-			.pCommandBufferInfos      = &command_buffer_submit_info,
+			.waitSemaphoreInfoCount = 0,
+			.commandBufferInfoCount = 1,
+			.pCommandBufferInfos = &command_buffer_submit_info,
 			.signalSemaphoreInfoCount = 0,
 		};
 		vkQueueSubmit2(gfx_context->gfx_queue, 1, &submit_info, VK_NULL_HANDLE);
@@ -673,6 +700,12 @@ void load_scene_data()
 			ZoneScopedN("Upload command execution");
 			vkDeviceWaitIdle(gfx_context->device);
 		}
+	}
+
+	{
+		ZoneScopedN("Destroy command buffers");
+		vkFreeCommandBuffers(gfx_context->device, upload_command_pool, 1, &upload_command_buffer);
+		vkDestroyCommandPool(gfx_context->device, upload_command_pool, nullptr);
 	}
 
 	auto finish_time = std::chrono::high_resolution_clock::now();

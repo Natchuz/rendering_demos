@@ -1441,6 +1441,8 @@ void renderer_dispatch()
 		std::copy(scene_data->point_lights.begin(), scene_data->point_lights.begin() + uniform_data.active_lights,
 				  uniform_data.point_lights);
 
+		memcpy(block.ptr, &uniform_data, sizeof(Global_Uniform_Data));
+
 		// Upload
 		VkBufferCopy region = {
 			.srcOffset = block.offset,

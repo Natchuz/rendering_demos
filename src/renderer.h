@@ -263,12 +263,6 @@ struct Renderer
 	VkSemaphore  upload_semaphore;
 	VkSemaphore  render_semaphore;
 
-	// Command pool associated with main upload heap - all operations on main upload heap are device-blocking,
-	// so we can create command buffers on per-upload basic and reset it at once. This will be changed in future
-	// by adding proper streaming support.
-	VkCommandPool   upload_command_pool;
-	VkCommandBuffer upload_command_buffer;
-
 	Upload_Heap upload_heap;
 };
 
