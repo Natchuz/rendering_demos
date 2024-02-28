@@ -7,65 +7,47 @@
 
 #include "hot_reload.h"
 
-// Private functions
-#if LIVEPP_ENABLED
-void pre_reload_cleanup();           // Deinitialize all resources that are bound to be hot reloaded
-void post_reload_reinitialization(); // Initialize resources after reload
-#endif
+Hot_Reload* Hot_Reload::ptr;
 
-void hot_reload_init()
+Hot_Reload::Hot_Reload()
 {
 #if LIVEPP_ENABLED
-	ZoneScopedN("Hot reload initialization");
+	ZoneScopedN("Hot reload startup");
 
-	hot_reload = new Hot_Reload{};
+	lpp::LppLocalPreferences preferences = lpp::LppCreateDefaultLocalPreferences();
+	lpp_agent = lpp::LppCreateSynchronizedAgent(&preferences, L"sdk/LivePP");
 
-	hot_reload->lpp_agent = lpp::LppCreateSynchronizedAgent(L"sdk/LivePP");
-
-	if (!lpp::LppIsValidSynchronizedAgent(&hot_reload->lpp_agent))
+	if (!lpp::LppIsValidSynchronizedAgent(&lpp_agent))
 	{
-		//throw std::runtime_error("Live++ error: invalid agent"); TODO
+		throw std::runtime_error("Live++ error: invalid agent");
 	}
-	hot_reload->lpp_agent.EnableModule(lpp::LppGetCurrentModulePath(), lpp::LPP_MODULES_OPTION_ALL_IMPORT_MODULES,
+	lpp_agent.EnableModule(lpp::LppGetCurrentModulePath(), lpp::LPP_MODULES_OPTION_ALL_IMPORT_MODULES,
 						   nullptr, nullptr);
 
 	spdlog::info("Enabled Live++ agent");
 #endif
 }
 
-void hot_reload_close()
+Hot_Reload::~Hot_Reload()
 {
 #if LIVEPP_ENABLED
-	ZoneScopedN("Hot reload deinitialization");
+	ZoneScopedN("Hot reload shutdown");
 
-	assert(hot_reload != nullptr);
-
-	lpp::LppDestroySynchronizedAgent(&hot_reload->lpp_agent);
-	delete hot_reload;
-
-	spdlog::info("Destroyed Live++ agent");
+	lpp::LppDestroySynchronizedAgent(&lpp_agent);
 #endif
 }
 
-void hot_reload_dispatch()
+void Hot_Reload::dispatch_reload()
 {
 #if LIVEPP_ENABLED
-	assert(hot_reload != nullptr);
-
-	if (hot_reload->lpp_agent.WantsReload())
+	if (lpp_agent.WantsReload(lpp::LPP_RELOAD_OPTION_SYNCHRONIZE_WITH_COMPILATION_AND_RELOAD))
 	{
 		ZoneScopedN("Hot reloading process");
 
 		auto start_time = std::chrono::high_resolution_clock::now();
-		//spdlog::info("-----[ Beginning hot reload (frame {}) ]-----", app->frame_number);
-		spdlog::info("Cleanup...");
 
-		pre_reload_cleanup();
-
-		hot_reload->lpp_agent.CompileAndReloadChanges(lpp::LPP_RELOAD_BEHAVIOUR_WAIT_UNTIL_CHANGES_ARE_APPLIED);
+		lpp_agent.Reload(lpp::LPP_RELOAD_BEHAVIOUR_WAIT_UNTIL_CHANGES_ARE_APPLIED);
 		spdlog::info("Live++ reloaded. Reinitializing...");
-
-		post_reload_reinitialization();
 
 		auto finish_time = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(finish_time - start_time);
@@ -74,22 +56,18 @@ void hot_reload_dispatch()
 #endif
 }
 
-void hot_reload_build_ui()
+void Hot_Reload::display_ui()
 {
-	ZoneScopedN("Hot reloading UI");
-
 	ImGui::Begin("Hot reloading");
 
 #if LIVEPP_ENABLED
 	ImGui::Text("Live++ version %s", LPP_VERSION);
-	ImGui::SeparatorText("On reload:");
-	ImGui::Checkbox("Rebuild frame data", &hot_reload->rebuild_frame_data);
-
+	
 	ImGui::Separator();
 
 	if (ImGui::Button("Schedule hot reload"))
 	{
-		hot_reload->lpp_agent.ScheduleReload();
+		lpp_agent.ScheduleReload();
 	}
 #else
 	ImGui::Text("Live++ disabled!");
@@ -97,29 +75,3 @@ void hot_reload_build_ui()
 
 	ImGui::End();
 }
-
-#if LIVEPP_ENABLED
-
-void pre_reload_cleanup()
-{
-	ZoneScopedN("Pre reload cleanup");
-
-	vkDeviceWaitIdle(gfx_context->device);
-
-	if (hot_reload->rebuild_frame_data)
-	{
-		renderer_destroy_frame_data();
-	}
-}
-
-void post_reload_reinitialization()
-{
-	ZoneScopedN("Post reload reinitialization");
-
-	if (hot_reload->rebuild_frame_data)
-	{
-		renderer_create_frame_data();
-	}
-}
-
-#endif

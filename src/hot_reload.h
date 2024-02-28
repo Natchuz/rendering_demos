@@ -7,17 +7,15 @@
 // Manages code hot reloading
 struct Hot_Reload
 {
+	static Hot_Reload* ptr; // Global handle
+
 #if LIVEPP_ENABLED
 	lpp::LppSynchronizedAgent lpp_agent;
-
-	bool rebuild_frame_data = true; // Reload settings and window
 #endif
+
+	Hot_Reload();
+	~Hot_Reload();
+
+	void dispatch_reload();
+	void display_ui();
 };
-
-inline Hot_Reload* hot_reload; // Global handle initialized by hot_reload_init()
-
-void hot_reload_init();
-void hot_reload_close();
-void hot_reload_dispatch();
-
-void hot_reload_build_ui();

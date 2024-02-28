@@ -26,7 +26,7 @@ void application_entry(Platform* p_platform)
 	app = new Application{};
 	platform = p_platform;
 
-	hot_reload_init();
+	Hot_Reload::ptr = new Hot_Reload();
 	p_platform->window_init(Window_Params{ .name = "Rendering demos", .size = {1280, 720} });
 	input_init();
 	gfx_context_init();
@@ -42,7 +42,7 @@ void application_entry(Platform* p_platform)
 	{
 		timings_new_frame();
 
-		hot_reload_dispatch(); // TODO: hold delta time measuring when hot reloading (exclude reload time from dt)
+		Hot_Reload::ptr->dispatch_reload();
 
 		p_platform->poll_events();
 		p_platform->fill_input();
@@ -80,7 +80,7 @@ void application_entry(Platform* p_platform)
 	input_destroy();
 
 	p_platform->window_destroy();
-	hot_reload_close();
+	delete Hot_Reload::ptr;
 }
 
 void build_ui()
@@ -99,7 +99,7 @@ void build_ui()
 	}
 
 	if (app->ui.windows.info)       build_info_window();
-	if (app->ui.windows.hot_reload) hot_reload_build_ui();
+	if (app->ui.windows.hot_reload) Hot_Reload::ptr->display_ui();
 	if (app->ui.windows.camera)     camera_build_ui();
 
 	build_scene_window();
